@@ -1,0 +1,1272 @@
+---
+title: 'The Anopheles mosquito brain at spatial and single-cell resolution: \n Analyis of Spatial Transcriptomics Data'
+author: "Johannes W. Bagnoli"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: false
+    keep_md: false
+    self_contained: yes
+---
+
+# Step 1: load required packages & functions:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = F, error = F)
+```
+
+```{r seed}
+set.seed(1234)
+projDir<-here::here()
+```
+
+```{r packages, results='hide'}
+libs <- c("Seurat","dplyr","reshape2","stringr","spacexr","tidyverse","gatepoints","artpack", "Rfast", "colorRamp2","ggalluvial", "cowplot", "scater", "ggrepel")
+lapply(libs, library, character.only = TRUE)
+
+```
+
+```{r functions_Deconvolution}
+## Functions related to RCTD Deconvolution
+### UMI cutoff for assignment
+UMI_cutoff <- function(nUMI) {
+  return (pmax(0.25, 2 - log(nUMI,2) / 5))
+}
+
+### Assignemnt of cell type and NR of celltypes per spot from RCTD weights
+#### object: Seurat RCTD object from spacexr
+ctype_assign_RCTD<- function(obect){
+  norm_weights = normalize_weights(obect@results$weights)
+  occur<- numeric(length(obect@cell_type_info$info[[2]]))
+  names(occur) = obect@cell_type_info$info[[2]]
+
+  cond_res<-list()
+  for (j in 1:length(obect@cell_type_info$info[[2]])) {
+    cell_type = obect@cell_type_info$info[[2]][j]
+    res_tmp = norm_weights[,cell_type] > UMI_cutoff(obect@spatialRNA@nUMI)
+    res_tmp<- res_tmp[res_tmp == TRUE]
+    if (length(res_tmp)>0){
+      cond_res[[j]] = data.frame(XC=names(res_tmp), celltype=cell_type)
+    }  else{
+      cond_res[[j]] = data.frame()
+    }
+  }
+  
+  cond_res_df<- dplyr::bind_rows(cond_res)
+  
+  XC_occ<- as.data.frame(table(cond_res_df$XC))
+  colnames(XC_occ)<-c("XC", "Nr_Celltypes")
+  
+  cond_res_df_collapse<- cond_res_df %>%   group_by(XC) %>%   summarise(cell_types = paste(unique(celltype), collapse = "_"))
+  final_results<-dplyr::left_join(XC_occ, cond_res_df_collapse)
+  rownames(final_results)<-final_results$XC
+  add_data <- final_results[,2:3]
+  return(add_data)  
+}
+
+```
+
+```{r functions_spatialDGEs}
+## Functions related to finding spatially variable genes within a given section of the head
+### Fit loess over the expression of the given genes as a function of their distance to the edge of the selected sections. returns a list containing xxx
+####object: Seurat object
+#### cluster: clusters to be included
+#### paramdf: parameter df for sections of interest
+#### genes: genes to be analysed as Gene.stable.IDs
+#### gorder: order of genes for plots; if NULL, genes are sorted alphabetically, default NULL
+EotM<-function(object, cluster, paramdf, genes, gorder= NULL){
+  meta<- object@meta.data
+  meta_HQ<- meta[meta$Brain_ID %in% paramdf$Brain_ID & meta$Sp_clusters %in% cluster, ]
+  meta_HQ_right<-meta_HQ[meta_HQ$y_rot_scaled > 0,]
+  meta_HQ_left<-meta_HQ[meta_HQ$y_rot_scaled < 0,]
+  
+  ## Do everything for the right brains
+  
+  right_list<-list()
+  if ("right" %in% paramdf$side ){
+    brains<- sort(unique(paramdf$Brain_ID[paramdf$side == "right"]))
+    for (i in 1:length(brains)){
+      right_list[[i]]<-list()
+      right_list[[i]]$plots<-list()
+      right_list[[i]]$data<-list()
+      dfplot<- meta_HQ_right[meta_HQ_right$Brain_ID == brains[i],]
+      paramplot<- paramdf[paramdf$side == "right" & paramdf$Brain_ID == brains[i],]
+      right_list[[i]]$plots$Selection<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled, colour = Sp_clusters), size=0.5)+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        #ggtitle(paste0(brains[i], " right side"))+
+        coord_fixed()+
+        guides(colour=F)+
+        xlab("")+ylab("")
+      
+      right_list[[i]]$data$raw<-scapNA(dfplot, "XC")
+      right_list[[i]]$data$zoom<-  right_list[[i]]$data$raw[ right_list[[i]]$data$raw$y_rot_scaled > paramplot$limit_y_rot &  right_list[[i]]$data$raw$x_rot_scaled < paramplot$limit_x_rot,]
+      right_list[[i]]$data$zoom<-scapNA(right_list[[i]]$data$zoom, "XC")
+      
+      right_list[[i]]$data$zoom$distance_0<- sqrt((right_list[[i]]$data$zoom$x_rot_scaled-paramplot$center_x_rot)^2 + (right_list[[i]]$data$zoom$y_rot_scaled-paramplot$center_y_rot)^2)
+      right_list[[i]]$data$zoom$distance_0_scaled<-right_list[[i]]$data$zoom$distance_0-min(right_list[[i]]$data$zoom$distance_0)
+      
+      right_list[[i]]$plots$Distance<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=right_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_0*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        coord_fixed()+
+        xlab("")+ylab("")
+      
+      max_dist<- max(right_list[[i]]$data$zoom$distance_0 )
+      right_list[[i]]$data$zoom$distance_edge<-max_dist-right_list[[i]]$data$zoom$distance_0  
+      right_list[[i]]$plots$DistanceEdge<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=right_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_edge*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance from edge in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        coord_fixed()+
+        xlab("")+ylab("")
+      
+      right_list[[i]]$plots$Distancebox<-ggplot()+
+        geom_boxplot(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5,nrow=1)))+ theme(legend.position = "top")+
+        xlab("")+ylab("Distance in µm")
+      
+      right_list[[i]]$plots$Distancebox_edge<-ggplot()+
+        geom_boxplot(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_edge*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_edge*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5,nrow=1)))+ theme(legend.position = "top")+
+        xlab("")+ylab("Distance in µm")
+      
+      
+      DefaultAssay(object) <- "SCT"
+      data <- FetchData(object = object,vars = c("XC", genes))
+      data<-data[data$XC %in% right_list[[i]]$data$zoom$XC,]
+      data_long<- data %>%   tidyr::pivot_longer(cols = 2:ncol(data),names_to = "Gene.stable.ID",values_to = "norm_Expr")
+      data_long<- dplyr::left_join(data_long, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+      data_long$Gene.name[is.na(data_long$Gene.name)]<- data_long$Gene.stable.ID[is.na(data_long$Gene.name)]
+      
+      data_long<- dplyr::left_join(data_long, right_list[[i]]$data$zoom[, c("XC", "distance_0", "distance_0_scaled", "Sp_clusters", "x_rot_scaled", "y_rot_scaled")], by="XC")
+      if (!(is_null(gorder))){
+        data_long$Gene.name<-factor(data_long$Gene.name, levels=c(gorder))
+      }
+      
+      right_list[[i]]$plots$Geneplot<-ggplot()+
+        geom_point(data=data_long, aes(x=distance_0*0.647, y=norm_Expr, colour = Sp_clusters), size=0.5)+
+        geom_smooth(data=data_long, aes(x=distance_0*0.647, y=norm_Expr), size=1, se = F, colour="black", linetype="dashed")+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        facet_wrap(~Gene.name, ncol=length(genes))+
+        xlab("Distance in µm")+ylab("")+guides(colour=F)
+      
+      max_dist<-max(data_long$distance_0)
+      data_long$distance_edge<- max_dist-data_long$distance_0 
+      right_list[[i]]$plots$Geneplot_edge<-ggplot()+
+        geom_point(data=data_long, aes(x=distance_edge*0.647, y=norm_Expr, colour = Sp_clusters), size=0.5)+
+        geom_smooth(data=data_long, aes(x=distance_edge*0.647, y=norm_Expr), size=1, se = F, colour="black", linetype="dashed")+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        facet_wrap(~Gene.name, ncol=length(genes))+
+        xlab("Distance in µm")+ylab("")+guides(colour=F)
+      
+      right_list[[i]]$plots$Geneplot_spatial<-ggplot()+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot), size=1, colour = "red", shape=8)+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=data_long, aes(x=y_rot_scaled, y=x_rot_scaled, colour = norm_Expr), size=0.5)+
+        scale_color_gradientn(colours=c("grey","orange", "red","red4"), values = c(0,0.33,0.66,1), name = "Normalised Expression")+
+        theme_bw()+facet_wrap(~Gene.name, ncol=length(genes))+coord_fixed()+ xlab("")+ylab("")+scale_y_reverse()
+      
+      tmp<- cowplot::plot_grid(right_list[[i]]$plots$Selection , right_list[[i]]$plots$Distance, right_list[[i]]$plots$Distancebox,  ncol=3, rel_widths = c(1,1,0.6))
+      right_list[[i]]$plots$CombinePLot<- cowplot::plot_grid(tmp,right_list[[i]]$plots$Geneplot_spatial, right_list[[i]]$plots$Geneplot,   nrow=3)
+      
+    }
+    names(right_list)<-brains
+  }
+  
+  left_list<-list()
+  if ("left" %in% paramdf$side ){
+    ## Do everything for the left brains
+    brains<- sort(unique(paramdf$Brain_ID[paramdf$side == "left"]))
+    for (i in 1:length(brains)){
+      left_list[[i]]<-list()
+      left_list[[i]]$plots<-list()
+      left_list[[i]]$data<-list()
+      dfplot<- meta_HQ_left[meta_HQ_left$Brain_ID == brains[i],]
+      paramplot<- paramdf[paramdf$side == "left" & paramdf$Brain_ID == brains[i],]
+      left_list[[i]]$plots$Selection<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled, colour = Sp_clusters), size=0.5)+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot), size=1, colour = "red", shape=8)+
+        scale_y_reverse()+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        #ggtitle(paste0(brains[i], " left side"))+guides(colour=F)+
+        xlab("")+ylab("")
+      
+      
+      
+      left_list[[i]]$data$raw<-scapNA(dfplot, "XC")
+      left_list[[i]]$data$zoom<-  left_list[[i]]$data$raw[ left_list[[i]]$data$raw$y_rot_scaled < paramplot$limit_y_rot &  left_list[[i]]$data$raw$x_rot_scaled < paramplot$limit_x_rot,]
+      left_list[[i]]$data$zoom<-scapNA(left_list[[i]]$data$zoom, "XC")
+      
+      left_list[[i]]$data$zoom$distance_0<- sqrt((left_list[[i]]$data$zoom$x_rot_scaled-paramplot$center_x_rot)^2 + (left_list[[i]]$data$zoom$y_rot_scaled-paramplot$center_y_rot)^2)
+      left_list[[i]]$data$zoom$distance_0_scaled<-left_list[[i]]$data$zoom$distance_0- min(left_list[[i]]$data$zoom$distance_0)
+      
+      left_list[[i]]$plots$Distance<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=left_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_0*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot), size=1, colour = "red", shape=8)+
+        scale_y_reverse()+
+        theme_bw()+xlab("")+ylab("")
+      
+      max_dist<- max(left_list[[i]]$data$zoomdistance_0 )
+      left_list[[i]]$data$zoom$distance_edge<-max_dist-left_list[[i]]$data$zoom$distance_0  
+      left_list[[i]]$plots$DistanceEdge<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=left_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_edge*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance from edge in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        coord_fixed()+
+        xlab("")+ylab("")
+      
+      left_list[[i]]$plots$Distancebox<-ggplot()+
+        geom_boxplot(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5,nrow=1)))+ theme(legend.position = "top")+
+        xlab("Cluster")+ylab("Distance in µm")
+      
+      left_list[[i]]$plots$Distancebox_edge<-ggplot()+
+        geom_boxplot(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_edge*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_edge*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5,nrow=1)))+ theme(legend.position = "top")+
+        xlab("Cluster")+ylab("Distance in µm")
+      
+      DefaultAssay(object) <- "SCT"
+      data <- FetchData(object = object,vars = c("XC", genes))
+      data<-data[data$XC %in% left_list[[i]]$data$zoom$XC,]
+      data_long<- data %>%   tidyr::pivot_longer(cols = 2:ncol(data),names_to = "Gene.stable.ID",values_to = "norm_Expr")
+      data_long<- dplyr::left_join(data_long, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+      data_long$Gene.name[is.na(data_long$Gene.name)]<- data_long$Gene.stable.ID[is.na(data_long$Gene.name)]
+      
+      data_long<- dplyr::left_join(data_long, left_list[[i]]$data$zoom[, c("XC", "distance_0", "distance_0_scaled","Sp_clusters","x_rot_scaled" ,"y_rot_scaled")], by="XC")
+      if (!(is_null(gorder))){
+        data_long$Gene.name<-factor(data_long$Gene.name, levels=c(gorder))
+      }
+      
+      left_list[[i]]$plots$Geneplot<-ggplot()+
+        geom_point(data=data_long, aes(x=distance_0*0.647, y=norm_Expr, colour = Sp_clusters), size=0.5)+
+        geom_smooth(data=data_long, aes(x=distance_0*0.647, y=norm_Expr), size=1, se = F, colour="black", linetype="dashed")+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        facet_wrap(~Gene.name, ncol=length(genes))+
+        xlab("Distance in µm")+ylab("")+guides(colour=F)
+      
+      max_dist<-max(data_long$distance_0)
+      data_long$distance_edge<- max_dist-data_long$distance_0 
+      left_list[[i]]$plots$Geneplot_edge<-ggplot()+
+        geom_point(data=data_long, aes(x=distance_edge*0.647, y=norm_Expr, colour = Sp_clusters), size=0.5)+
+        geom_smooth(data=data_long, aes(x=distance_edge*0.647, y=norm_Expr), size=1, se = F, colour="black", linetype="dashed")+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        facet_wrap(~Gene.name, ncol=length(genes))+
+        xlab("Distance in µm")+ylab("")+guides(colour=F)
+      
+      left_list[[i]]$plots$Geneplot_spatial<-ggplot()+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot), size=1, colour = "red", shape=8)+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=data_long, aes(x=y_rot_scaled, y=x_rot_scaled, colour = norm_Expr), size=0.5)+
+        scale_color_gradientn(colours=c("grey","orange", "red","red4"), values = c(0,0.33,0.66,1), name = "Normalised Expression")+
+        theme_bw()+facet_wrap(~Gene.name, ncol=length(genes))+coord_fixed()+xlab("")+ylab("")+
+        scale_y_reverse()
+      
+      tmp<- cowplot::plot_grid(left_list[[i]]$plots$Selection , left_list[[i]]$plots$Distance, left_list[[i]]$plots$Distancebox, ncol=3, rel_widths = c(1,1,0.6))
+      left_list[[i]]$plots$CombinePLot<- cowplot::plot_grid(tmp, left_list[[i]]$plots$Geneplot_spatial, left_list[[i]]$plots$Geneplot, nrow=2)
+      
+      
+    }
+    names(left_list)<-brains
+  }
+  results<- list(right_list, left_list)
+  names(results)<-c("right", "left")
+  return(results)
+}
+
+### Fit natural cubic spline fit over the expression of the given genes as a function of their distance to the edge of the selected sections. returns a list containing xxx
+####object: Seurat object
+#### cluster: clusters to be included
+#### paramdf: parameter df for sections of interest
+#### genes: genes to be analysed as Gene.stable.IDs
+#### freedom: degrees of freedom to be used in natural cubic spline fit, default 10
+EotM_fit<-function(object, cluster, paramdf, genes, freedom=10){
+  meta<- object@meta.data
+  meta_HQ<- meta[meta$Brain_ID %in% paramdf$Brain_ID & meta$Sp_clusters %in% cluster, ]
+  meta_HQ_right<-meta_HQ[meta_HQ$y_rot_scaled > 0,]
+  meta_HQ_left<-meta_HQ[meta_HQ$y_rot_scaled < 0,]
+  
+  ## if section is on the right side of the brain
+  
+  right_list<-list()
+  if ("right" %in% paramdf$side ){
+    brains<- sort(unique(paramdf$Brain_ID[paramdf$side == "right"]))
+    for (i in 1:length(brains)){
+      right_list[[i]]<-list()
+      right_list[[i]]$plots<-list()
+      right_list[[i]]$data<-list()
+      dfplot<- meta_HQ_right[meta_HQ_right$Brain_ID == brains[i],]
+      paramplot<- filter(paramdf, side == "right" & Brain_ID == brains[i])
+      right_list[[i]]$plots$Selection<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled, colour = Sp_clusters), size=0.5)+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        #ggtitle(paste0(brains[i], " right side"))+
+        coord_fixed()+
+        guides(colour=F)+
+        xlab("")+ylab("")
+      
+      right_list[[i]]$data$raw<-dfplot
+      right_list[[i]]$data$zoom<-  filter(right_list[[i]]$data$raw, y_rot_scaled > paramplot$limit_y_rot &  x_rot_scaled < paramplot$limit_x_rot)
+      
+      right_list[[i]]$data$zoom$distance_0<- sqrt((right_list[[i]]$data$zoom$x_rot_scaled-paramplot$center_x_rot)^2 + (right_list[[i]]$data$zoom$y_rot_scaled-paramplot$center_y_rot)^2)
+      right_list[[i]]$data$zoom$distance_0_scaled<-right_list[[i]]$data$zoom$distance_0-min(right_list[[i]]$data$zoom$distance_0)
+      
+      right_list[[i]]$plots$Distance<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=right_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_0*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        coord_fixed()+
+        xlab("")+ylab("")
+      
+      right_list[[i]]$plots$Distancebox<-ggplot()+
+        geom_boxplot(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=right_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        xlab("")+ylab("Distance in µm")
+      
+      ### Extract genes from SCT data matrix
+      DefaultAssay(object) <- "SCT"
+      data <- FetchData(object = object,vars = c("XC", genes))
+      data<-data[data$XC %in% right_list[[i]]$data$zoom$XC,]
+      data_long<- data %>%   tidyr::pivot_longer(cols = 2:ncol(data),names_to = "Gene.stable.ID",values_to = "norm_Expr")
+      data_long<- dplyr::left_join(data_long, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+      data_long$Gene.name[is.na(data_long$Gene.name)]<- data_long$Gene.stable.ID[is.na(data_long$Gene.name)]
+      
+      data_long<- dplyr::left_join(data_long, right_list[[i]]$data$zoom[, c("XC", "distance_0", "distance_0_scaled", "Sp_clusters", "x_rot_scaled", "y_rot_scaled")], by="XC")
+      right_list[[i]]$data$ExpressionData<-data_long
+      ### Perform fit per gene and extract expression range(max/min, mean, meadian)
+      library(purrr)
+      library(splines)
+      right_list[[i]]$PolynomialFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ poly(distance_0,freedom,raw=TRUE), data=.x))
+      
+      right_list[[i]]$NatSplineFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ ns(distance_0,freedom), data=.x))
+      
+      right_list[[i]]$BSplineFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ bs(distance_0,freedom), data=.x))
+
+      right_list[[i]]$data$expr_ranges<- data_long %>% group_by(Gene.stable.ID) %>% summarise("Max"= max(norm_Expr),"Min"= min(norm_Expr),"Median"= median(norm_Expr),"Mean"= mean(norm_Expr)) %>% as.data.frame()
+     
+      right_list[[i]]$plots$min_max<-ggplot()+
+     geom_point(data=right_list[[i]]$data$expr_ranges, aes(x=Min, y=Max))+
+    theme_bw()+ expand_limits(x = 0, y = 0)
+      
+      right_list[[i]]$plots$median_max<-ggplot()+
+        geom_point(data=right_list[[i]]$data$expr_ranges, aes(x=Median, y=Max))+
+        theme_bw()+ expand_limits(x = 0, y = 0)
+      
+      right_list[[i]]$plots$mean_max<-ggplot()+
+        geom_point(data=right_list[[i]]$data$expr_ranges, aes(x=Mean, y=Max))+
+        theme_bw()+ expand_limits(x = 0, y = 0)
+  
+
+      right_list[[i]]$data$Polynomial_stats <- plyr::ldply(right_list[[i]]$PolynomialFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      right_list[[i]]$data$NatSpline_stats <- plyr::ldply(right_list[[i]]$NatSplineFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      right_list[[i]]$data$BSpline_stats <- plyr::ldply(right_list[[i]]$BSplineFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      
+      right_list[[i]]$data$combined_stats<- gdata::combine(right_list[[i]]$data$Polynomial_stats, right_list[[i]]$data$NatSpline_stats,right_list[[i]]$data$BSpline_stats)
+      right_list[[i]]$data$combined_stats$source<- sapply(as.character(right_list[[i]]$data$combined_stats$source), function(x){ strsplit(strsplit(x, split = "$", fixed=T)[[1]][3], split = "_")[[1]][1]})
+      
+      
+      right_list[[i]]$plots$Rsqu_distr<-ggplot()+
+        geom_density(data=right_list[[i]]$data$combined_stats, aes(x=r_sq, colour=source))+
+        theme_bw()+xlim(0,1)
+      
+      right_list[[i]]$plots$adj.Rsqu_distr<-ggplot()+
+        geom_density(data=right_list[[i]]$data$combined_stats, aes(x=adj.r_squ,colour=source))+
+        theme_bw()+xlim(0,1)
+    }
+    names(right_list)<-brains
+  }
+  
+  ### If section is on the left side of the brain
+  left_list<-list()
+  if ("left" %in% paramdf$side ){
+    brains<- sort(unique(paramdf$Brain_ID[paramdf$side == "left"]))
+    for (i in 1:length(brains)){
+      left_list[[i]]<-list()
+      left_list[[i]]$plots<-list()
+      left_list[[i]]$data<-list()
+      dfplot<- meta_HQ_left[meta_HQ_left$Brain_ID == brains[i],]
+      paramplot<- filter(paramdf, side == "left" & Brain_ID == brains[i])
+      left_list[[i]]$plots$Selection<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled, colour = Sp_clusters), size=0.5)+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        #ggtitle(paste0(brains[i], " left side"))+
+        coord_fixed()+
+        guides(colour=F)+
+        xlab("")+ylab("")
+      
+      left_list[[i]]$data$raw<-dfplot
+      left_list[[i]]$data$zoom<-  filter(left_list[[i]]$data$raw, y_rot_scaled > paramplot$limit_y_rot &  x_rot_scaled < paramplot$limit_x_rot)
+      
+      left_list[[i]]$data$zoom$distance_0<- sqrt((left_list[[i]]$data$zoom$x_rot_scaled-paramplot$center_x_rot)^2 + (left_list[[i]]$data$zoom$y_rot_scaled-paramplot$center_y_rot)^2)
+      left_list[[i]]$data$zoom$distance_0_scaled<-left_list[[i]]$data$zoom$distance_0-min(left_list[[i]]$data$zoom$distance_0)
+      
+      left_list[[i]]$plots$Distance<-ggplot()+
+        geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
+        geom_point(data=left_list[[i]]$data$zoom, aes(x=y_rot_scaled, y=x_rot_scaled, colour = distance_0*0.647), size=0.5)+
+        scale_color_gradientn(colours=c("blue4","blue","lightblue","orange", "red","red4"), values = c(0,0.2,0.4,0.6,0.8,1),name = "Distance in µm")+
+        geom_hline(data=paramplot, aes_string(yintercept = paramplot$limit_x_rot), size=0.5, colour = "red")+
+        geom_vline(data=paramplot, aes_string(xintercept = paramplot$limit_y_rot), size=0.5, colour = "red")+
+        geom_point(data=paramplot, aes_string(x=paramplot$center_y_rot, y=paramplot$center_x_rot),size=1, colour = "red", shape=8)+
+        theme_bw()+
+        scale_y_reverse()+
+        coord_fixed()+
+        xlab("")+ylab("")
+      
+      left_list[[i]]$plots$Distancebox<-ggplot()+
+        geom_boxplot(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        geom_jitter(data=left_list[[i]]$data$zoom, aes(x=Sp_clusters, y=distance_0*0.647, colour = Sp_clusters), size=0.5)+
+        theme_bw()+
+        scale_color_manual(values = cols_cl, name="Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        xlab("")+ylab("Distance in µm")
+      
+      ### Extract genes from SCT data matrix
+      DefaultAssay(object) <- "SCT"
+      data <- FetchData(object = object,vars = c("XC", genes))
+      data<-data[data$XC %in% left_list[[i]]$data$zoom$XC,]
+      data_long<- data %>%   tidyr::pivot_longer(cols = 2:ncol(data),names_to = "Gene.stable.ID",values_to = "norm_Expr")
+      data_long<- dplyr::left_join(data_long, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+      data_long$Gene.name[is.na(data_long$Gene.name)]<- data_long$Gene.stable.ID[is.na(data_long$Gene.name)]
+      
+      data_long<- dplyr::left_join(data_long, left_list[[i]]$data$zoom[, c("XC", "distance_0", "distance_0_scaled", "Sp_clusters", "x_rot_scaled", "y_rot_scaled")], by="XC")
+      left_list[[i]]$data$ExpressionData<-data_long
+      ### Perform fit per gene and extract expression range(max/min, mean, meadian)
+      library(purrr)
+      library(splines)
+      left_list[[i]]$PolynomialFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ poly(distance_0,freedom,raw=TRUE), data=.x))
+      
+      left_list[[i]]$NatSplineFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ ns(distance_0,freedom), data=.x))
+      
+      left_list[[i]]$BSplineFits <- data_long %>% 
+        split(f = .$Gene.stable.ID) %>% 
+        map(~stats::lm(norm_Expr ~ bs(distance_0,freedom), data=.x))
+      
+      left_list[[i]]$data$expr_ranges<- data_long %>% group_by(Gene.stable.ID) %>% summarise("Max"= max(norm_Expr),"Min"= min(norm_Expr),"Median"= median(norm_Expr),"Mean"= mean(norm_Expr)) %>% as.data.frame()
+      
+      left_list[[i]]$plots$min_max<-ggplot()+
+        geom_point(data=left_list[[i]]$data$expr_ranges, aes(x=Min, y=Max))+
+        theme_bw()+ expand_limits(x = 0, y = 0)
+      
+      left_list[[i]]$plots$median_max<-ggplot()+
+        geom_point(data=left_list[[i]]$data$expr_ranges, aes(x=Median, y=Max))+
+        theme_bw()+ expand_limits(x = 0, y = 0)
+      
+      left_list[[i]]$plots$mean_max<-ggplot()+
+        geom_point(data=left_list[[i]]$data$expr_ranges, aes(x=Mean, y=Max))+
+        theme_bw()+ expand_limits(x = 0, y = 0)
+      
+      
+      left_list[[i]]$data$Polynomial_stats <- plyr::ldply(left_list[[i]]$PolynomialFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      left_list[[i]]$data$NatSpline_stats <- plyr::ldply(left_list[[i]]$NatSplineFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      left_list[[i]]$data$BSpline_stats <- plyr::ldply(left_list[[i]]$BSplineFits, function(x){ data.frame(r_sq = summary(x)$r.squared, adj.r_squ = summary(x)$adj.r.squared)})
+      
+      left_list[[i]]$data$combined_stats<- gdata::combine(left_list[[i]]$data$Polynomial_stats, left_list[[i]]$data$NatSpline_stats,left_list[[i]]$data$BSpline_stats)
+      left_list[[i]]$data$combined_stats$source<- sapply(as.character(left_list[[i]]$data$combined_stats$source), function(x){ strsplit(strsplit(x, split = "$", fixed=T)[[1]][3], split = "_")[[1]][1]})
+      
+      
+      left_list[[i]]$plots$Rsqu_distr<-ggplot()+
+        geom_density(data=left_list[[i]]$data$combined_stats, aes(x=r_sq, colour=source))+
+        theme_bw()+xlim(0,1)
+      
+      left_list[[i]]$plots$adj.Rsqu_distr<-ggplot()+
+        geom_density(data=left_list[[i]]$data$combined_stats, aes(x=adj.r_squ,colour=source))+
+        theme_bw()+xlim(0,1)
+    }
+    names(left_list)<-brains
+  }
+  results<- list(right_list, left_list)
+  names(results)<-c("right", "left")
+  return(results)
+}
+```
+
+```{r functions_DGE}
+## Functions related to Differential gene expression
+### Find all markers for specific group in seurat object, i.e. FindAllMarkers function from suerat with additional plotting and filtering steps. Returns a list of Dataframes namely "AllTests" with no thresholds , "Significant" with pvalue and logfld threshold  and "Filtered" with pvalue, logFC and pct thresholds. 
+#### object: Seurat Object
+#### method: DGE method ,e.g. "wilcox" or "mast", default "wilcox", see "test.use" in Seurat::FindAllMarkers()
+#### lf.th: logfoldchange threshold for genes to be considered differentially expressed, default 0.5
+#### p.th: adjusted p value threshold for genes to be considered differentially expressed, default 0.05
+#### pct.th: percent of cells expressiing the gene to be considered differentially expressed, default 0.25
+#### group: group to perform DGE on, default= "ident", , see "group.by" in Seurat::FindAllMarkers()
+GetAllMarkers<- function(object, method="wilcox", lf.th= 0.5, p.th=0.05, pct.th=0.25, group="ident"){
+  DEG_List<-list()
+  DEG_List$AllTests<-FindAllMarkers(object, logfc.threshold = 0, min.pct = 0, test.use = method, group.by = group)
+  colnames(DEG_List$AllTests)[ncol(DEG_List$AllTests)]<- "Gene.stable.ID"
+  
+  DEG_List$AllTests<- dplyr::left_join(DEG_List$AllTests, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+  DEG_List$AllTests$Gene.name[is.na(DEG_List$AllTests$Gene.name)]<- DEG_List$AllTests$Gene.stable.ID[is.na(DEG_List$AllTests$Gene.name)]
+  
+  DEG_List$Significant<-DEG_List$AllTests[DEG_List$AllTests$p_val_adj < p.th & abs(DEG_List$AllTests$avg_log2FC) > lf.th, ]
+  DEG_List$Filtered<-DEG_List$Significant[DEG_List$Significant$pct.1 > pct.th | DEG_List$Significant$pct.2 > pct.th  , ]
+ 
+  return(DEG_List)
+}
+
+```
+
+```{r functions_other}
+### Remove lines with NA values in data frame
+#### data: dataframe
+#### colname: column name to where to look for NAs
+scapNA<- function(data, colname){
+  data<-data[!(is.na(data[, colname])), ]
+  return(data)
+}
+```
+
+```{r colour_scales}
+# Colours for 15 clusters, picked from paper
+cols_cl<-c("#9FB6D2","#AD5729", "#FDE67E","#376964","#D4872F","#616F94","#7B9B70", "#538CB8","#D4B435", "#ABDB9D","#2F3769","#733B30", "#CE7C51", "#C79736")
+names(cols_cl)<-c("0", "1","2", "3","4", "5","6", "7","8", "9","10","11","12","13")
+
+cols_subcl<-c("#FADE0A", "#FA0A7E","#4F4C38","#42737A","#0ADAFA", "#3646FF", "#A69A3D", "#1ED274")
+names(cols_subcl)<-c("cl2_0", "cl2_1", "cl2_2", "cl2_3", "cl2_4", "cl2_5", "cl2_6", "cl2_7")
+
+# color gradient for cell type assignment heatmaps
+col_br = colorRamp2(c(0,0.25, 0.5,0.75,1), c("grey95","gold1","orange2", 'red','red4'))
+```
+
+# Step 2: load data and annotation files
+```{r load_annots}
+## Load gene.name to Gene.stable.ID annotation data frame
+All_genes_AgamP4_PEST <- read.delim(file.path(projDir, "/Data/Annotations/All_genes_AgamP4_PEST.txt"))
+
+## Load markers for single cell clusters
+An_Markers <- read.delim(file.path(projDir, "/Data/SingleCell/An_Markers.txt"))
+
+An_Markers$cluster_annot<-rep(c("Neural progenitors (eye)", "An. cluster 1", "adPN, IPN, OPN", "Neural progenitors", "An. cluster 4", "An. cluster 5", "Pm1/Pm2, Pm4", "Octopaminergic", "An. cluster 8", "An. cluster 9", "Ensheathing glia", "L1, L2, L3, LNvs", "Optic lobe cells (generic type 1)", "An. cluster 13", "G-KC, A/B-KC", "Photoreceptors", "Tm1/TmY8", "Optic lobe cells (generic type 2)", "CCAP/circadian clock neurons", "L2", "T3", "An. cluster 21", "An. cluster 22", "Astrocyte-like glia", "L4/L5, Tm9", "Surface glia", "An. cluster 26", "An. cluster 27", "A/B*-KC", "An. cluster 29", "L3, LNvs", "A/B-KC", "G-KC, A/B-KC", "An. cluster 33", "T4/T5", "Optic lobe cells (generic type 3)", "L1", "CCAP/circadian clock neurons", "Oenocytoids", "C2, C3", "Pm1/Pm2, Pm1/Pm2/Pm3", "Poxn neurons", "Granulocytes", "An. cluster 43", "An. cluster 44"), each=20)
+
+An_Markers$sc_cluster<-rep(c("An0","An1","An2","An3","An4","An5","An6","An7","An8","An9","An10","An11","An12","An13","An14","An15","An16","An17","An18","An19","An20","An21","An22","An23","An24","An25","An26","An27","An28","An29","An30","An31","An32","An33","An34","An35","An36","An37","An38","An39","An40","An41","An42","An43","An44"), each=20)
+```
+
+```{r load_scExpressionData}
+ref_sc<-readRDS(file.path(projDir, "/Data/SingleCell/scRNA_SeuratObject.rds"))
+```
+
+```{r load_SpatialExpressionData}
+## load Seurat file created by curio pipeline for bloc2 sample
+rds_bloc2<- readRDS(file.path(projDir, "/Data/Spatial/bloc2_seurat.rds"))
+
+## load Seurat file created by curio pipeline for bloc4 sample
+rds_bloc4<- readRDS(file.path(projDir, "/Data/Spatial/bloc4_seurat.rds"))
+```
+
+```{r data_combine}
+
+### Combine the data of bloc2 and bloc4
+## Prepare raw UMI matrix for bloc2
+counts_bloc2<- as.data.frame(as.matrix(rds_bloc2@assays$RNA@counts)) ### obtain UMI matrix from seurat object
+colnames(counts_bloc2)<-paste0("bloc2_",colnames(counts_bloc2))       ### rename barcodes
+rownames(counts_bloc2)<-sapply(rownames(counts_bloc2), function(x){strsplit(x, split = ":")[[1]][2]}) ## fix gene names
+counts_bloc2$Genes<-rownames(counts_bloc2)
+coords_bloc2<- rds_bloc2@images$slice1@coordinates    ### extract spot coordinates
+rownames(coords_bloc2)<- paste0("bloc2_",rownames(coords_bloc2))
+coords_tmp_bloc2<-coords_bloc2
+coords_tmp_bloc2$XC<-rownames(coords_tmp_bloc2)
+
+### create new meta data file
+meta_bloc2<- data.frame(BC=rownames(rds_bloc2@meta.data), 
+                        XC=paste0("bloc2_",rownames(rds_bloc2@meta.data)),
+                        bloc="bloc2",
+                        percent.mt=rds_bloc2@meta.data[, "percent.mt"])
+
+meta_bloc2<- dplyr::left_join(meta_bloc2, coords_tmp_bloc2, by="XC")
+rm(coords_tmp_bloc2)
+rownames(meta_bloc2)<- meta_bloc2$XC
+
+## Prepare raw UMI matrix for bloc4
+counts_bloc4<- as.data.frame(as.matrix(rds_bloc4@assays$RNA@counts)) ### obtain UMI matrix from seurat object
+colnames(counts_bloc4)<-paste0("bloc4_",colnames(counts_bloc4))      ### rename barcodes
+rownames(counts_bloc4)<-sapply(rownames(counts_bloc4), function(x){strsplit(x, split = ":")[[1]][2]})  ## fix gene names
+counts_bloc4$Genes<-rownames(counts_bloc4)
+coords_bloc4<- rds_bloc4@images$slice1@coordinates                 ### extract spot coordinates
+rownames(coords_bloc4)<- paste0("bloc4_",rownames(coords_bloc4))
+coords_tmp_bloc4<-coords_bloc4
+coords_tmp_bloc4$XC<-rownames(coords_tmp_bloc4)
+
+### create new meta data file
+meta_bloc4<- data.frame(BC=rownames(rds_bloc4@meta.data), 
+                        XC=paste0("bloc4_",rownames(rds_bloc4@meta.data)),
+                        bloc="bloc4",
+                        percent.mt=rds_bloc4@meta.data[, "percent.mt"])
+
+meta_bloc4<- dplyr::left_join(meta_bloc4, coords_tmp_bloc4, by="XC")
+rm(coords_tmp_bloc4)
+rownames(meta_bloc4)<- meta_bloc4$XC
+
+## Combine Data
+### Create combined UMI count matrix
+counts<- full_join(counts_bloc2,counts_bloc4,  by="Genes")
+counts<-column_to_rownames(counts, var = "Genes")
+counts<-as.matrix(counts)
+counts[is.na(counts)]<- 0
+
+### Create combine meta data file
+meta<- rbind(meta_bloc2,  meta_bloc4)
+coords<-rbind(coords_bloc2,  coords_bloc4)
+
+### Create new Seurat file
+combined<-CreateSeuratObject(counts=counts, meta.data = meta, project = "SpatialTranscriptomics")
+meta_combined<-combined@meta.data
+
+```
+
+# Step 3: Perform QC
+```{r QC}
+## Set thresholds for UMI, genes and percent.mt
+ncount_th<-100
+nfeat_th<-50
+percmt_th<-0.4
+## Subset seurat file
+combined_filt <- subset(combined, subset = nCount_RNA > ncount_th & nFeature_RNA > nfeat_th & percent.mt < percmt_th)
+```
+
+# Step 4: Assign spots to individual brains 
+```{r Brain_Assign, eval = FALSE}
+## Code for manually assigning Spots to single brains
+## bloc2
+df<-combined@meta.data[combined@meta.data$bloc == "bloc2", c("x", "y")]
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc2_1 <- gatepoints::fhs(df)
+saveRDS(bloc2_1, "/Brain_Selection/bloc2_1.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc2_2 <- gatepoints::fhs(df)
+saveRDS(bloc2_2, "/Brain_Selection/bloc2_2.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc2_3 <- gatepoints::fhs(df)
+saveRDS(bloc2_3, "/Brain_Selection/bloc2_3.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc2_4 <- gatepoints::fhs(df)
+saveRDS(bloc2_4, "/Brain_Selection/bloc2_4.rds")
+
+## bloc4
+df<-combined@meta.data[combined@meta.data$bloc == "bloc2", c("x", "y")]
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc2_1 <- gatepoints::fhs(df)
+saveRDS(bloc4_1, "/Brain_Selection/bloc4_1.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc4_2 <- gatepoints::fhs(df)
+saveRDS(bloc4_2, "/Brain_Selection/bloc4_2.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc4_3 <- gatepoints::fhs(df)
+saveRDS(bloc4_3, "/Brain_Selection/bloc4_3.rds")
+
+plot(df, col = "red", pch = 16, cex=0.1)
+bloc4_4 <- gatepoints::fhs(df)
+saveRDS(bloc4_4, "/Brain_Selection/bloc4_4.rds")
+```
+
+```{r Brain_Assign_load}
+### Assignemnts was performed manually as depicted in the commented out code above.  Assignments are loaded directly in this script.
+singlebrains<-list.files(paste0(projDir,"/Data/Spatial/Brain_Selection/"), full.names = T, pattern = "bloc2|bloc4")
+sb_names<-sapply(list.files(paste0(projDir,"/Data/Spatial/Brain_Selection/"), full.names = F, pattern = "bloc2|bloc4"), function(x){strsplit(x, split=".", fixed = T)[[1]][1]})
+
+
+singlebrains_list<-list()
+for (i in 1:length(singlebrains)){
+  singlebrains_list[[i]]<-as.data.frame(readRDS(singlebrains[i]))
+}
+names(singlebrains_list)<-sb_names
+
+singlebrains_df<- bind_rows(singlebrains_list, .id = "Brain_ID")
+colnames(singlebrains_df)<- c("Brain_ID", "XC")
+```
+
+```{r Brain_Rotate}
+### Coordinates of single brains will be rotated around the center for visualization purposes
+Rotation_df<- data.frame(Brain_ID= unique(singlebrains_df$Brain_ID),
+                         Rotation_angle= c(-130,130,-120,-10,-160,45,0,-70)) ### define rotation angles
+
+singlebrains_df<- dplyr::left_join(singlebrains_df, Rotation_df, by="Brain_ID")
+
+Rotation_info<- combined_filt@meta.data[, c("XC", "x", "y")]                ### extract original coordinates
+Rotation_info<- dplyr::left_join(Rotation_info, singlebrains_df, by="XC")
+
+### rotate spot coordinates per brain based on defined rotation angles
+Rotation_info_2<-data.frame()
+for (i in unique(Rotation_info$Brain_ID)){
+  tmp_df<- drop_na(Rotation_info[Rotation_info$Brain_ID == i,])
+  tmp_rot<-unique(tmp_df$Rotation_angle)
+  tmp_rot_df<-   artpack::rotator(tmp_df, x, y, angle = tmp_rot, anchor = "center", drop = FALSE) 
+  Rotation_info_2<-rbind(Rotation_info_2,tmp_rot_df )
+}
+
+colnames(Rotation_info_2)<-c("x_rot","y_rot","XC","Brain_ID","Rotation_angle")
+rownames(Rotation_info_2)<- Rotation_info_2$XC
+
+Rotation_info_2<- Rotation_info_2[,c("Brain_ID","Rotation_angle","x_rot","y_rot")]
+
+### Add new rotated coordinates as meta data to seurat object
+combined_filt <- AddMetaData(combined_filt, metadata = Rotation_info_2)
+
+```
+
+# Step 5: Identify high quality brains
+```{r ID_HQ}
+Brains<- sort(unique(combined_filt@meta.data$Brain_ID))
+HQ_df<-data.frame(Brain_ID=Brains, HQ_Brain=c("Yes", "Yes","No", "Yes", "No","No","Yes","Yes")) 
+
+add_meta<-combined_filt@meta.data[, c("XC", "Brain_ID")]
+add_meta<- dplyr::left_join(add_meta, HQ_df, by="Brain_ID")
+add_HQ<- add_meta$HQ_Brain
+names(add_HQ)<-add_meta$XC
+
+combined_filt<- AddMetaData(combined_filt,add_HQ, col.name = "HQ_Brain")
+
+HQ_Brains<- HQ_df$Brain_ID[HQ_df$HQ_Brain == "Yes"]
+```
+
+```{r HQ_scale}
+vabe_list<- list()
+for (i in unique(HQ_Brains)){
+  vabe<-filter(combined_filt@meta.data, Brain_ID == i)
+  
+  maxi_x<-max(vabe$x_rot)
+  maxi_y<-max(vabe$y_rot)
+  
+  mini_x<-min(vabe$x_rot)
+  mini_y<-min(vabe$y_rot)
+  
+  cent_x<- (maxi_x-mini_x)/2
+  cent_y<- (maxi_y-mini_y)/2
+  
+  vabe$x_rot_corr<- vabe$x_rot - mini_x
+  vabe$y_rot_corr<- vabe$y_rot - mini_y
+  
+  
+  corr_maxi_x<-max(vabe$x_rot_corr)
+  corr_maxi_y<-max(vabe$y_rot_corr)
+  
+  corr_cent_x<- corr_maxi_x/2
+  corr_cent_y<- corr_maxi_y/2
+  
+  vabe$x_rot_scaled<- vabe$x_rot_corr - corr_cent_x
+  vabe$y_rot_scaled<- vabe$y_rot_corr - corr_cent_y
+  
+  vabe_list[[i]]<- vabe[, c("XC", "x_rot_scaled", "y_rot_scaled")]
+  
+}
+
+vabe<- bind_rows(vabe_list)
+add_meta<- vabe
+add_meta<- add_meta[, 2:3]
+rownames(add_meta)<- vabe$XC
+
+combined_filt<- AddMetaData(combined_filt, add_meta)
+```
+
+
+# Step 6: Deconvolution using RCTD
+```{r RCTD_run, eval = FALSE}
+ref_counts <- as.matrix(ref_sc@assays$SCT@counts) # extracts counts matrix of reference data set
+ref_meta <- as.data.frame(ref_sc@meta.data) # extracts meta_data (barcodes, clusters, and nUMI)
+
+cell_types <- ref_meta$seurat_clusters
+names(cell_types) <- rownames(ref_meta) # create cell_types named list
+cell_types <- as.factor(cell_types) # convert to factor data type
+
+nUMI <- colSums(ref_counts); 
+names(nUMI) <- rownames(ref_meta) # create nUMI named list
+
+### Create the Reference object
+reference <- Reference(ref_counts, cell_types, nUMI)
+blocs<- c("bloc2", "bloc4")
+
+counts <- as.matrix(combined@assays$RNA$counts)# extracts counts matrix of spatial data (before Filtering)
+
+rm(combined,ref_sc, ref_counts)
+gc()
+
+RCTD_list<-list()
+for (i in 1:length(blocs)){
+   counts_filt<- counts[,grep(pattern=blocs[i], colnames(counts))]
+   coords_filt<- coords[grep(pattern=blocs[i], rownames(coords)),]
+   nUMI_tmp <- colSums(counts) # In this case, total counts per pixel is nUMI
+
+   ### Create SpatialRNA object
+   puck <- SpatialRNA(coords_filt, counts_filt, nUMI_tmp)
+   RCTD_list[[i]]<- create.RCTD(puck, reference, max_cores = 4,UMI_min = min(nUMI_tmp))
+   RCTD_list[[i]]<- run.RCTD( RCTD_list[[i]], doublet_mode = 'full')
+ }
+
+```
+
+```{r RCTD_load}
+RCTD<-readRDS(file.path(projDir,"/Data/Spatial/RCTD_perbloc.rds"))
+```
+
+```{r RCTD_Assign}
+### extract cell type assignments
+RCTD_assign_list<-list()
+for (i in 1:3){
+  RCTD_assign_list[[i]]<-ctype_assign_RCTD(RCTD[[i]])
+}
+RCTD_assign_df<- bind_rows(RCTD_assign_list)
+
+### assign spots with several assignments as "Multiple"
+RCTD_assign_df$cell_types_plot[RCTD_assign_df$Nr_Celltypes == 1]<-paste0("An",RCTD_assign_df$cell_types[RCTD_assign_df$Nr_Celltypes == 1])
+RCTD_assign_df$cell_types_plot[RCTD_assign_df$Nr_Celltypes > 1]<-"Multiple"
+colnames(RCTD_assign_df)<-paste0(colnames(RCTD_assign_df), "_RCTD")
+
+### Add assignemnt to meta data of seurat object
+combined_filt<- AddMetaData(combined_filt, RCTD_assign_df)
+
+### assign spots with no assignments as "Not_Assigned"
+combined_filt@meta.data$Nr_Celltypes_RCTD[is.na(combined_filt@meta.data$Nr_Celltypes_RCTD)]<-0
+combined_filt@meta.data$cell_types_RCTD[is.na(combined_filt@meta.data$cell_types_RCTD)]<-"Not_Assigned"
+combined_filt@meta.data$cell_types_plot_RCTD[is.na(combined_filt@meta.data$cell_types_plot_RCTD)]<-"Not_Assigned"
+
+### relevel factors
+combined_filt@meta.data$cell_types_plot_RCTD<- factor(combined_filt@meta.data$cell_types_plot_RCTD, levels=c("An0","An1","An2","An3","An4","An5","An6","An7","An8","An9","An10","An11","An12","An13","An14","An15","An16","An17","An18","An19","An20","An21","An22","An23","An24","An25","An26","An27","An28","An29","An30","An31","An32","An33","An34","An35","An36","An37","An38","An39","An40","An41","An42","Multiple","Not_Assigned"))
+
+```
+
+
+# Step 7: Normalization and Clustering
+```{r Norm_Clust}
+### Noramlisation with scTransfrorm
+combined_filt <- SCTransform(combined_filt, vars.to.regress = c("percent.mt", "bloc"), verbose = FALSE )
+### Run PCA
+combined_filt <- RunPCA(combined_filt, verbose = FALSE, seed.use = 42)
+### Run UMAP
+combined_filt <- RunUMAP(combined_filt, dims = 1:40, verbose = FALSE, seed.use = 1866,reduction.name ="umap")
+### Clustering
+combined_filt <- FindNeighbors(combined_filt, dims = 1:50, verbose = FALSE )
+combined_filt <- FindClusters(combined_filt, verbose = FALSE, resolution = 0.5,random.seed = 0, cluster.name = "Sp_clusters")
+```
+
+```{r dimred_addmeta}
+umapdf<- as.data.frame(combined_filt@reductions$umap@cell.embeddings)
+pcadf<- as.data.frame(combined_filt@reductions$pca@cell.embeddings[,1:3])
+
+
+combined_filt<- AddMetaData(combined_filt, pcadf)
+combined_filt<- AddMetaData(combined_filt, umapdf)
+```
+
+# Step 8: Subclustering of cluster Sp2
+```{r  Subset_Sp2}
+counts_Sp2<- counts[,colnames(counts) %in% combined_filt@meta.data$XC[combined_filt@meta.data$Sp_clusters ==2]]
+counts_Sp2<- counts_Sp2[rowSums(counts_Sp2) > 0,]
+combined_filt_Sp2<-CreateSeuratObject(counts=counts_Sp2, meta.data = combined_filt@meta.data[combined_filt@meta.data$Sp_clusters ==2,], project = "SpatialTranscriptomics_Sp2")
+```
+
+
+```{r Norm_Clust_Sp2}
+combined_filt_Sp2 <- SCTransform(combined_filt_Sp2, vars.to.regress = c("bloc", "percent.mt"), verbose = FALSE)
+combined_filt_Sp2 <- RunPCA(combined_filt_Sp2, verbose = FALSE)
+combined_filt_Sp2 <- RunUMAP(combined_filt_Sp2, dims = 1:50, verbose = FALSE, seed.use = 1866)
+combined_filt_Sp2 <- FindNeighbors(combined_filt_Sp2, dims = 1:50, verbose = FALSE)
+combined_filt_Sp2 <- FindClusters(combined_filt_Sp2, verbose = FALSE, resolution = 1.2,random.seed = 1866)
+```
+
+# Step 9: Assignment of Kenyan cells, MIP cells and octopaminergic cells in cluster Sp2
+```{r KC_Assign}
+mushypees<-combined_filt@meta.data$XC[combined_filt@meta.data$umap_1 < 2.5 & combined_filt@meta.data$umap_2 > 7.75]
+combined_filt_Sp2@meta.data$Mushroom<- "No"
+combined_filt_Sp2@meta.data$Mushroom[combined_filt_Sp2@meta.data$XC %in% mushypees] <-"Yes"
+
+combined_filt@meta.data$Mushroom<- "No"
+combined_filt@meta.data$Mushroom[combined_filt@meta.data$XC %in% mushypees] <-"Yes"
+```
+
+```{r MIP_Assign}
+MIpees<-combined_filt@meta.data$XC[combined_filt@meta.data$umap_1 < 1.8 & combined_filt@meta.data$umap_2 > 6.5]
+
+combined_filt_Sp2@meta.data$MIPcell<- "No"
+combined_filt_Sp2@meta.data$MIPcell[combined_filt_Sp2@meta.data$XC %in% MIpees] <-"Yes"
+
+combined_filt@meta.data$MIPcell<- "No"
+combined_filt@meta.data$MIPcell[combined_filt@meta.data$XC %in% MIpees] <-"Yes"
+```
+
+```{r Octo_Assign}
+Octopees<-combined_filt@meta.data$XC[combined_filt@meta.data$umap_1 > 4.9 & combined_filt@meta.data$umap_2 > 4]
+
+combined_filt_Sp2@meta.data$Octopaminergic<- "No"
+combined_filt_Sp2@meta.data$Octopaminergic[combined_filt_Sp2@meta.data$XC %in% Octopees] <-"Yes"
+
+combined_filt@meta.data$Octopaminergic<- "No"
+combined_filt@meta.data$Octopaminergic[combined_filt@meta.data$XC %in% Octopees] <-"Yes"
+```
+
+# Step 10: Differential gene expression analysis
+```{r DEG_Sp, eval=FALSE}
+DEGs_SpClusters<- GetAllMarkers(combined_filt, group = "Sp_clusters" , method = "MAST")
+```
+
+```{r DEG_KC, eval=FALSE}
+p.th<- 0.05
+lf.th<-0.5
+pct.th<- 0.25
+DEGs_Mushroom<-list()
+DEGs_Mushroom$AllTests<-FindMarkers(combined_filt_Sp2, ident.1 = "Yes", ident.2 = "No", group.by = "Mushroom", min.pct = 0, min.cells.feature = 0, min.cells.group = 0, recorrect_umi=FALSE, logfc.threshold = 0, test.use="MAST")
+
+DEGs_Mushroom$AllTests$Gene.stable.ID<- rownames(DEGs_Mushroom$AllTests)
+
+DEGs_Mushroom$AllTests<- dplyr::left_join(DEGs_Mushroom$AllTests, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+DEGs_Mushroom$AllTests$Gene.name[is.na(DEGs_Mushroom$AllTests$Gene.name)]<- DEGs_Mushroom$AllTests$Gene.stable.ID[is.na(DEGs_Mushroom$AllTests$Gene.name)]
+
+DEGs_Mushroom$Significant<-DEGs_Mushroom$AllTests[DEGs_Mushroom$AllTests$p_val_adj < p.th & abs(DEGs_Mushroom$AllTests$avg_log2FC) > lf.th, ]
+DEGs_Mushroom$Filtered<-DEGs_Mushroom$Significant[DEGs_Mushroom$Significant$pct.1 > pct.th | DEGs_Mushroom$Significant$pct.2 > pct.th  , ]
+```
+
+```{r DEG_MIP, eval=FALSE }
+p.th<- 0.05
+lf.th<-0.5
+pct.th<- 0.25
+
+DEGs_MIP<-list()
+DEGs_MIP$AllTests<-FindMarkers(combined_filt_Sp2, ident.1 = "Yes", ident.2 = "No", group.by = "MIPcell", min.pct = 0, min.cells.feature = 0, min.cells.group = 0, recorrect_umi=FALSE, logfc.threshold = 0, test.use="MAST")
+
+DEGs_MIP$AllTests$Gene.stable.ID<- rownames(DEGs_MIP$AllTests)
+
+DEGs_MIP$AllTests<- dplyr::left_join(DEGs_MIP$AllTests, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+DEGs_MIP$AllTests$Gene.name[is.na(DEGs_MIP$AllTests$Gene.name)]<- DEGs_MIP$AllTests$Gene.stable.ID[is.na(DEGs_MIP$AllTests$Gene.name)]
+
+DEGs_MIP$Significant<-DEGs_MIP$AllTests[DEGs_MIP$AllTests$p_val_adj < p.th & abs(DEGs_MIP$AllTests$avg_log2FC) > lf.th, ]
+DEGs_MIP$Filtered<-DEGs_MIP$Significant[DEGs_MIP$Significant$pct.1 > pct.th | DEGs_MIP$Significant$pct.2 > pct.th  , ]
+```
+
+```{r DEG_Octo, eval=FALSE}
+p.th<- 0.05
+lf.th<-0.5
+pct.th<- 0.25
+
+DEGs_Octo<-list()
+DEGs_Octo$AllTests<-FindMarkers(combined_filt_Sp2, ident.1 = "Yes", ident.2 = "No", group.by = "Octopaminergic", min.pct = 0, min.cells.feature = 0, min.cells.group = 0, recorrect_umi=FALSE, logfc.threshold = 0, test.use="MAST")
+
+DEGs_Octo$AllTests$Gene.stable.ID<- rownames(DEGs_Octo$AllTests)
+
+DEGs_Octo$AllTests<- dplyr::left_join(DEGs_Octo$AllTests, All_genes_AgamP4_PEST, by="Gene.stable.ID")
+DEGs_Octo$AllTests$Gene.name[is.na(DEGs_Octo$AllTests$Gene.name)]<- DEGs_Octo$AllTests$Gene.stable.ID[is.na(DEGs_Octo$AllTests$Gene.name)]
+
+DEGs_Octo$Significant<-DEGs_Octo$AllTests[DEGs_Octo$AllTests$p_val_adj < p.th & abs(DEGs_Octo$AllTests$avg_log2FC) > lf.th, ]
+DEGs_Octo$Filtered<-DEGs_Octo$Significant[DEGs_Octo$Significant$pct.1 > pct.th | DEGs_Octo$Significant$pct.2 > pct.th  , ]
+```
+
+# Step 11: Spatial Cluster Distances
+```{r Plots_load}
+combined_filt<-readRDS(file.path(projDir, "Data/Spatial/combined_filtered_seurat.rds"))
+```
+
+```{r Clust_Dist}
+dist_list<-list()
+distances_df<-data.frame()
+HQ_Brains<-  HQ_df$Brain_ID[HQ_df$HQ_Brain == "Yes"]
+HQ_cluster<- unique(combined_filt@meta.data$Sp_clusters[combined_filt@meta.data$HQ_Brain =="Yes"]) %>% discard(is.na) %>% sort()
+
+for (b in HQ_Brains){
+  dist_list[[b]]<-list()
+  info_filt_tmp<-filter(combined_filt@meta.data, Brain_ID == b)
+  for (i in 1:length(HQ_cluster)){
+    dist_list[[b]][[i]]<-list()
+    tmp_1<-info_filt_tmp[info_filt_tmp$Sp_clusters == i-1, c("XC","x", "y")]
+    for (j in 1:length(HQ_cluster)){
+      tmp_2<-info_filt_tmp[info_filt_tmp$Sp_clusters == j-1, c("XC","x", "y")]
+      dist_list[[b]][[i]][[j]]<-fields::rdist(tmp_1[,c("x", "y")], tmp_2[,c("x", "y")])
+      colnames(dist_list[[b]][[i]][[j]])<-tmp_2$XC
+      rownames(dist_list[[b]][[i]][[j]])<-tmp_1$XC
+
+      if (i==j){
+        if (ncol(dist_list[[b]][[i]][[j]])>1){
+          tmp_df<-data.frame(Brain_ID=b,Cluster_comp1= i-1, Cluster_comp2= j-1, mean_min=mean(Rfast::rownth(dist_list[[b]][[i]][[j]],elems=rep(2,nrow(dist_list[[b]][[i]][[j]])))))  
+        }else{
+          tmp_df<-data.frame(Brain_ID=b,Cluster_comp1= i-1, Cluster_comp2= j-1, mean_min=NA) 
+        }
+        
+      }else{
+        tmp_df<-data.frame(Brain_ID=b,Cluster_comp1= i-1, Cluster_comp2= j-1, mean_min=mean(rowMins(dist_list[[b]][[i]][[j]]))) 
+      }
+      distances_df<-rbind(distances_df, tmp_df)
+    }
+  } 
+}
+distances_df<-distances_df[!(is.na(distances_df$Brain_ID)),]
+distances_df<-distances_df[distances_df$mean_min !=Inf,]
+
+distances_df<-filter(distances_df, Cluster_comp1 != 11 & Cluster_comp2 != 11)
+
+distances_df_mean<- distances_df %>% group_by(Cluster_comp1, Cluster_comp2) %>% summarise(mean_min= mean(mean_min)) %>% as.data.frame()
+distances_df_mean <- distances_df_mean %>%   rowwise() %>%   mutate(Comparison = paste(sort(c_across(starts_with("Cluster_"))),collapse = "_"))
+distances_df_mean2 <- distances_df_mean %>% group_by(Comparison) %>% summarise(mean_min_Comparison= mean(mean_min)) %>% as.data.frame()
+distances_df_mean2$Comp1<-as.numeric(sapply(distances_df_mean2$Comparison, function(x){strsplit(x, split = "_")[[1]][1]}))
+distances_df_mean2$Comp2<-as.numeric(sapply(distances_df_mean2$Comparison, function(x){strsplit(x, split = "_")[[1]][2]}))
+
+distances_df_mean2$Comp1<-factor(as.character(distances_df_mean2$Comp1), levels=c("0","1","2","3","4","5","6","7","8","9", "10","12"))
+distances_df_mean2$Comp2<-factor(as.character(distances_df_mean2$Comp2), levels=c("0","1","2","3","4","5","6","7","8","9", "10","12"))
+
+```
+
+# Step 12: Spatial Expression within the eye
+```{r Eye}
+zoom_df<- data.frame(Brain_ID=c ("bloc4_4"),
+                      side=c("right"),
+                      limit_x_rot=c(-75),
+                      limit_y_rot=c( 100),
+                      center_x_rot=c(-75),
+                      center_y_rot=c(100))
+
+# Create custm gene list starting from providing gene names, requires gene annotation
+customgenepanel<-All_genes_AgamP4_PEST$Gene.stable.ID[All_genes_AgamP4_PEST$Gene.name %in% c( "CPR132",  "ARR2", "GPROP8","AGAP002291", "AGAP001913", "AGAP000965")]
+
+# Run function to get the expression by distance and get the plots
+custom_EOTM<-EotM(object = combined_filt, cluster = c(0,1,2,3,4,5,6,7,8,9,10,11,12), paramdf = zoom_df, genes = customgenepanel, gorder= c( "AGAP000965","AGAP002291","AGAP001913","ARR2", "CPR132", "GPROP8"))
+
+# Model expression of all genes within sections
+Fit_all<-EotM_fit(object = combined_filt,cluster = c(0,1,2,3,4,5,6,7,8,9,10,11,12), paramdf = zoom_df, genes = rownames(combined_filt@assays$SCT$data))
+```
+
+# Step 13: Plots
+## Clustering {.tabset .tabset-dropdown}
+### Principal Component Analysis {.tabset}
+```{r Plot_PCA, fig.width=8, fig.height=6}
+DimPlot(combined_filt, ,label = TRUE, reduction = "pca",group.by = "Sp_clusters", cols = cols_cl)
+```
+
+### UMAP {.tabset}
+```{r Plot_UMAP, fig.width=8, fig.height=6}
+DimPlot(combined_filt, ,label = TRUE, reduction = "umap",group.by = "Sp_clusters", cols = cols_cl)
+```
+
+### Spatial {.tabset}
+```{r Plot_clSpatial, fig.width=10, fig.height=4}
+
+a<-ggplot()+
+        geom_point(data=filter(combined_filt@meta.data, bloc =="bloc2"), aes(x=y, y=x, colour = Sp_clusters), size=0.1)+
+        theme_bw()+
+        scale_y_reverse()+
+        scale_color_manual(values = cols_cl, name="Sp Cluster")+
+        guides(colour = FALSE)+
+        ylab("")+xlab("")
+b<-ggplot()+
+        geom_point(data=filter(combined_filt@meta.data, bloc =="bloc2"), aes(x=y, y=x, colour = Sp_clusters), size=0.1)+
+        theme_bw()+
+        scale_y_reverse()+
+        scale_color_manual(values = cols_cl, name="Sp Cluster")+
+        guides(colour = guide_legend(override.aes = list(size=5), ncol=2))+
+        ylab("")+xlab("")
+
+cowplot::plot_grid(a,b, rel_widths = c(0.8,1))
+```
+
+### Single Brains {.tabset}
+```{r Plot_Clbrains, fig.width=10, fig.height=8}
+plot_list<-list()
+for (i in Brains){
+  df_plot<-filter(combined_filt@meta.data, Brain_ID == i)
+  plot_list[[i]]<-ggplot()+
+                    geom_point(data=df_plot, aes(x=y_rot, y=x_rot, colour = Sp_clusters), size=0.5)+
+                    theme_bw()+
+                    scale_y_reverse()+
+                    scale_color_manual(values = cols_cl, name="Sp Cluster")+
+                    guides(colour = FALSE)+
+                    coord_fixed()+
+                    ylab("")+xlab("")
+}
+legend <- cowplot::get_legend(b)
+cowplot::plot_grid(legend, plotlist = plot_list)
+                 
+```
+
+## Deconvolution {.tabset}
+```{r Plots_Decon, fig.height=10, fig.width=15}
+df<- as.data.frame(table(combined_filt@meta.data$Sp_clusters, combined_filt@meta.data$cell_types_plot_RCTD))
+
+colnames(df)<-c("Sp_clusters", "RCTD", "Nr_spots")
+df$RCTD<- factor(df$RCTD, levels=c("An0","An1","An2","An3","An4","An5","An6","An7","An8","An9","An10","An11","An12","An13","An14","An15","An16","An17","An18","An19","An20","An21","An22","An23","An24","An25","An26","An27","An28","An29","An30","An31","An32","An33","An34","An35","An36","An37","An38","An39","An40","An41","An42","Multiple","Not_Assigned"))
+
+
+
+ggplot()+
+  geom_alluvium(data=df,aes(y = Nr_spots, axis1 = Sp_clusters, axis2 = RCTD, fill = Sp_clusters), width = 1/12) +
+  geom_stratum(data=df,aes(y = Nr_spots, axis1 = Sp_clusters, axis2 = RCTD),width = 1/12,alpha = .5) +
+  geom_label(data=df, aes(y = Nr_spots, axis1 = Sp_clusters, axis2 = RCTD,label = after_stat(stratum)),stat = "stratum") +
+  scale_x_discrete(limits = c("Sp_clusters", "RCTD"), expand = c(.05, .05)) +
+  scale_fill_manual(values=cols_cl) +
+    theme_bw()
+```
+
+## Cluster Distance {.tabset}
+```{r Plots_Clust_Dif, fig.height=7, fig.width=7}
+ggplot()+
+  geom_tile(data=distances_df_mean2, aes(x=Comp1, y=Comp2, fill=mean_min_Comparison*0.647))+
+  scale_fill_gradientn(colours = rev(c("blue4","blue","lightblue","orange", "red","red4")), trans="log2", name = "Mean Minimal Distance in µm")+
+  theme_bw()+
+  coord_fixed()+
+  xlab("Spatial Cluster")+ylab("Spatial Cluster")
+```
+
+## Eye section {.tabset}
+### Example of Spatial Markers {.tabset}
+```{r Plots_SpatialMarkers, fig.height=7, fig.width=15}
+a<-cowplot::plot_grid(custom_EOTM$right$bloc4_4$plots$Selection, custom_EOTM$right$bloc4_4$plots$DistanceEdge)
+cowplot::plot_grid(a, custom_EOTM$right$bloc4_4$plots$Geneplot_spatial, custom_EOTM$right$bloc4_4$plots$Distancebox_edge,custom_EOTM$right$bloc4_4$plots$Geneplot_edge, ncol=2)
+```
+
+### Spatially varbiable genes  {.tabset}
+```{r Plots_SpatialVariable, fig.height=10, fig.width=5}
+filt_expr<-list()
+for (i in 1:length(Fit_all$right)){
+  data_long<-filter(Fit_all$right[[i]]$data$ExpressionData, Gene.stable.ID %in% Fit_all$right[[i]]$data$NatSpline_stats$.id[Fit_all$right[[i]]$data$NatSpline_stats$adj.r_squ > 0.1])
+  expr_ranges_filt<-filter(Fit_all$right[[i]]$data$expr_ranges, Max-Min >1.5)
+  filt_expr[[i]]<-filter(data_long, Gene.stable.ID %in% expr_ranges_filt$Gene.stable.ID)
+  max_dist<- max(filt_expr[[i]]$distance_0)
+  filt_expr[[i]]$distance_from_edge<- max_dist-filt_expr[[i]]$distance_0
+  names(filt_expr)[i]<- names(Fit_all$right)[i]
+}
+
+filt_expr_comb<-bind_rows(filt_expr, .id = "Brain_ID")
+
+Brain_genes<-unique(filt_expr_comb[, c("Brain_ID", "Gene.name")])
+Brain_genes<- as.data.frame(table(Brain_genes$Gene.name))
+
+### model the clusters distribution
+dist_clus_filt<-list()
+for (i in 1:length(Fit_all$right)){
+  zoom<- Fit_all$right[[i]]$data$zoom
+  zoom$Distance_bin<-cut(x = zoom$distance_0,breaks=seq(1,max(zoom$distance_0)+10, 10))
+  dist_clus<-as.data.frame(table(zoom$Distance_bin, zoom$Sp_clusters))
+  colnames(dist_clus)<-c("Distance_bin",  "Sp_clusters",  "Freq")
+  dist_clus$Distance_bin_numeric<-sapply(as.character(dist_clus$Distance_bin), function(x){as.numeric(strsplit(strsplit(x, split = ",", fixed = T)[[1]][1], split = "(", fixed = T)[[1]][2])})
+  dist_clus_filt[[i]]<-filter(dist_clus,Sp_clusters %in% c(0,1,2,4,5,8) )
+  max_dist<- max(dist_clus_filt[[i]]$Distance_bin_numeric)
+  dist_clus_filt[[i]]$distance_from_edge<- max_dist-dist_clus_filt[[i]]$Distance_bin_numeric
+  names(dist_clus_filt)[i]<- names(Fit_all$right)[i]
+  }
+
+dist_clus_filt_com<-bind_rows(dist_clus_filt, .id = "Brain_ID")
+
+dist_clus_filt_com_mean<- dist_clus_filt_com %>% group_by(Sp_clusters, distance_from_edge) %>% summarise(Mean_Freq=mean(Freq)) %>% as.data.frame()
+
+### Get the peak from the modeled expression
+assigned_list<-list()
+for (i in 1:length(Fit_all$right)){
+  assignedDF<-data.frame()
+  for (j in unique(filt_expr[[i]]$Gene.stable.ID)){
+    daje<-data.frame(distance_0=seq(from=1, to= max(Fit_all$right[[i]]$data$zoom$distance_0), by=10),norm_Expr=predict(Fit_all$right[[i]]$NatSplineFits[[j]], newdata=data.frame(distance_0=seq(from=1, to=max(Fit_all$right[[i]]$data$zoom$distance_0),, by=10))))
+    peaks<- daje %>% top_n(wt = norm_Expr,n = 1) %>% .$distance_0
+    
+    assigned_clusters<-filter(dist_clus_filt[[i]], Distance_bin_numeric == peaks ) %>% top_n(wt = Freq, n =1 ) %>% .$Sp_clusters
+    max_dist<- max(Fit_all$right[[i]]$data$zoom$distance_0)
+    ascl<-paste0(assigned_clusters, collapse = "_")
+    ascl_peaks<-peaks
+    ascl_peaksedge<-max_dist-peaks
+    tmpdf<- data.frame(assigned_clusters=ascl,Gene.stable.ID=j, peak_bin=ascl_peaks, peak_bin_from_edge= ascl_peaksedge)
+    
+    assignedDF<-rbind(assignedDF, tmpdf)
+  }
+  assigned_list[[i]]<-dplyr::left_join(filt_expr[[i]], assignedDF, by="Gene.stable.ID")
+  names(assigned_list)[i]<- names(Fit_all$right)[i]
+}
+
+assigned_list_com<-bind_rows(assigned_list, .id = "Brain_ID")
+
+
+assigned_list_mean <- assigned_list_com[, c("Gene.name","Gene.stable.ID", "peak_bin_from_edge", "norm_Expr")] %>% group_by(Gene.name,Gene.stable.ID) %>% summarise(mean_peak_bin_from_edge= mean(peak_bin_from_edge), mean_norm_Expr= mean(norm_Expr))
+assigned_list_com_wide <- unique(assigned_list_com[, c("Gene.name", "Brain_ID", "assigned_clusters")]) %>% pivot_wider(names_from = Brain_ID, values_from =assigned_clusters )
+
+assigned_list_mean_Brain_genes<- filter(assigned_list_mean, Gene.name %in% Brain_genes$Var1[Brain_genes$Freq > 1])
+
+ggplot()+
+  geom_smooth(data = dist_clus_filt_com_mean, aes(x=distance_from_edge*0.647, y=Mean_Freq, colour=Sp_clusters),method = "lm",formula = y ~ ns(x, 10), se=F)+
+  geom_label_repel(data = assigned_list_mean_Brain_genes, aes(x=mean_peak_bin_from_edge*0.647, y=3*mean_norm_Expr, label=Gene.name),size=3, max.overlaps = 500)+
+  theme_bw()+  scale_color_manual(values=cols_cl, name=("Spatial Clusters"))+ scale_x_continuous(breaks = c(0,50,100,150,200,250,300))+
+  scale_y_continuous(name = "Cluster Abundance", sec.axis = sec_axis(~./3, name="Mean normalized Expression")  )+xlab("Mean distance from edge of the eye [µm]")+coord_flip()+
+  guides(colour = guide_legend(override.aes = list(size=10)))
+```
+
+# Session Info
+```{r sessioninfo}
+sessionInfo()
+```
+
+
+
+
