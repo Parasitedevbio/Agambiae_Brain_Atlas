@@ -1,0 +1,863 @@
+---
+title: 'The Anopheles mosquito brain at spatial and single-cell resolution: \n Analysis of infection status and age in Bulk Transcriptomics Data'
+author: "Irene Rossi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: false
+    keep_md: false
+    self_contained: yes
+---
+
+# Step 1: load required packages & functions:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = F, error = F)
+```
+
+```{r seed}
+set.seed(1234)
+projDir<-here::here()
+```
+
+```{r packages, results='hide'}
+
+libs <- c("DESeq2","tidyverse","dplyr", "tidyr","reshape2", "readODS", "viridis", "cowplot")
+lapply(libs, library, character.only = TRUE)
+
+```
+
+```{r custfunc_PCA13}
+alternative.pca1_3 <- function (object, ...) 
+{
+  .local <- function (object, intgroup = "condition", ntop = 500, 
+                      returnData = FALSE) 
+  {
+    rv <- rowVars(assay(object))
+    select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, 
+                                                       length(rv)))]
+    pca <- prcomp(t(assay(object)[select, ]))
+    percentVar <- pca$sdev^2/sum(pca$sdev^2)
+    if (!all(intgroup %in% names(colData(object)))) {
+      stop("the argument 'intgroup' should specify columns of colData(dds)")
+    }
+    intgroup.df <- as.data.frame(colData(object)[, intgroup, 
+                                                 drop = FALSE])
+    group <- if (length(intgroup) > 1) {
+      factor(apply(intgroup.df, 1, paste, collapse = ":"))
+    }
+    else {
+      colData(object)[[intgroup]]
+    }
+    d <- data.frame(PC1 = pca$x[, 1], PC2 = pca$x[, 3], group = group, 
+                    intgroup.df, name = colnames(object))
+    if (returnData) {
+      attr(d, "percentVar") <- percentVar[1:3]
+      return(d)
+    }
+    ggplot(data = d, aes_string(x = "PC1", y = "PC2", color = "group")) + 
+      geom_point(size = 3) + xlab(paste0("PC1: ", round(percentVar[1] * 
+                                                          100), "% variance")) + ylab(paste0("PC3: ", round(percentVar[3] * 
+                                                                                                              100), "% variance")) + coord_fixed() +
+      stat_ellipse()
+  }
+  .local(object, ...)
+}
+```
+
+# Step 2: load relevant Data and adjust
+```{r load_data}
+countData <-read.table(file.path(projDir,"/Data/Bulk/Ag_bulk_infections_matrix_corrected.csv"), sep = ",", row.names = 1, header = T)
+metaData <- read.table(paste0(projDir,"/Data/Bulk/Ag_infections_phenofile_corrected.csv"), sep = ",", header=T)
+```
+
+```{r subset_data}
+# create test vs control objects ----
+# create an oocyst object
+countData_oo <- countData[, grep(pattern = "oocy", colnames(countData))]
+metaData_oo <- filter(metaData, sample_name  %in% colnames(countData_oo))
+
+# create replicates objects
+countData_oo1 <- countData[, grep(pattern = "oocy1", colnames(countData))]
+metaData_oo1 <- filter(metaData, sample_name  %in% colnames(countData_oo1))
+countData_oo2 <- countData[, grep(pattern = "oocy2", colnames(countData))]
+metaData_oo2 <- filter(metaData, sample_name  %in% colnames(countData_oo2))
+
+# create a sporozoite object
+countData_spz <- countData[, grep(pattern = "sporo", colnames(countData))]
+metaData_spz <- filter(metaData, sample_name  %in% colnames(countData_spz))
+
+# create replicates objects
+countData_spz1 <- countData[, grep(pattern = "sporo1", colnames(countData))]
+metaData_spz1 <- filter(metaData, sample_name  %in% colnames(countData_spz1))
+countData_spz2 <- countData[, grep(pattern = "sporo2", colnames(countData))]
+metaData_spz2 <- filter(metaData, sample_name  %in% colnames(countData_spz2))
+```
+
+# Step 3: Analysis using all batches and cell stages
+## Using oocyst stage as reference
+```{r All_oo}
+# make DESeq matrix
+dds <- DESeqDataSetFromMatrix(countData = countData, 
+                              colData = metaData,
+                              design = ~ sample_type, tidy = F)
+
+# set reference level
+dds$sample_type <- relevel(dds$sample_type, ref = "control")
+# add phenofile cathegories interactions ("design" argument in the above function "DESeqDataSetFromMatrix")
+dds$group <- factor(paste0(dds$sample_type, dds$infection_stage))
+dds$group <- relevel(dds$group, ref = "controloocyst")
+design(dds) <- ~ group
+# this way later the result levels would be all contrasted to oocyst controls.
+
+# filter out by at least 3 samples with a count of 10 or higher ----
+keep <- rowSums(counts(dds) >= 10) >= 3
+dds <- dds[keep,]
+
+# apply DESEQ function ----
+dds <- DESeq(dds)
+
+# check oocyst DE
+shres_ooall <- lfcShrink(dds, type="apeglm", lfcThreshold=0, 
+                         coef=c("group_testoocyst_vs_controloocyst"))
+
+shres_ooall_ashr <- lfcShrink(dds, type="ashr", lfcThreshold=0, 
+                              contrast=c("group", "testoocyst", "controloocyst"))
+
+# In nbinomGLM(x = x, Y = YNZ, size = size, weights = weightsNZ, offset = offsetNZ, : the line search routine failed, unable to sufficiently decrease the function value
+# usually this rises for extremely low counts - already filtered out - or problematic genes with zero logFC - that were not found in my data.
+# Basically it seems that this warning is raised for no reason, so apeglm results are kept for omogeneity with the previous analyses.
+# In addition, ashr method is also applied later without raising any error, giving the same DEGs (2 antimicrobial peptides),
+# oo (2 replicates) apeglm
+sig_shres_ooall <- shres_ooall %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+
+# oo (2 replicates) ashr
+sig_shres_ooall_ashr <- shres_ooall_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+
+# check sporozoite DE
+shres_spz_ashr <- lfcShrink(dds, type="ashr", lfcThreshold=0, 
+                            contrast=c("group", "testsporozoite", "controlsporozoite"))
+# SPZ
+sig_shres_spz_ashr <- shres_spz_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+
+```
+
+## Using sporozoite stage as reference
+```{r All_spz}
+# see below
+dds.spzref <- DESeqDataSetFromMatrix(countData = countData, 
+                                     colData = metaData,
+                                     design = ~ sample_type, tidy = FALSE)
+
+# set reference level
+dds.spzref$sample_type <- relevel(dds.spzref$sample_type, ref = "control")
+# add phenofile cathegories interactions ("design" argument in the above function "DESeqDataSetFromMatrix")
+dds.spzref$group <- factor(paste0(dds.spzref$sample_type, dds.spzref$infection_stage))
+dds.spzref$group <- relevel(dds.spzref$group, ref = "controlsporozoite")
+design(dds.spzref) <- ~ group
+# this way later the result levels would be all contrasted to sporozoite controls.
+
+# filter out by at least 3 samples with a count of 10 or higher ----
+keep <- rowSums(counts(dds.spzref) >= 10) >= 3
+dds.spzref <- dds.spzref[keep,]
+
+# apply DESEQ function
+dds.spzref <- DESeq(dds.spzref)
+
+# check sporozoite DE
+shres_spzall <- lfcShrink(dds.spzref, type="apeglm", lfcThreshold=0, 
+                          coef=c("group_testsporozoite_vs_controlsporozoite"))
+# spz all
+sig_shres_spzall <- shres_spzall %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+sig_shres_spzall # no DEG
+```
+
+# Step 4: Analysis per cell stage
+## In oocyst stage
+```{r Stage_oo}
+# oocyst replicates ----
+dds_oo <- DESeqDataSetFromMatrix(countData = countData_oo, 
+                                 colData = metaData_oo,
+                                 design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_oo <- rowSums(counts(dds_oo) >= 10) >= 3
+dds_oo <- dds_oo[keep_oo,]
+
+# apply DESEQ function
+dds_oo <- DESeq(dds_oo)
+# shrinked results conditionwise
+shres_oo <- lfcShrink(dds_oo, type="apeglm", lfcThreshold=0,
+                      coef="sample_type_test_vs_control")
+
+shres_oo_ashr <- lfcShrink(dds_oo, type="ashr", lfcThreshold=0,
+                      coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# oo-solo ashr
+sig_shres_oo_ashr <- shres_oo_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# oo-solo apeglm
+sig_shres_oo <- shres_oo %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+## In sporozoite stage
+```{r Stage_spz}
+# sporozoite replicates ----
+dds_spz <- DESeqDataSetFromMatrix(countData = countData_spz, 
+                                  colData = metaData_spz,
+                                  design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_spz <- rowSums(counts(dds_spz) >= 10) >= 3
+dds_spz <- dds_spz[keep_spz,]
+
+# apply DESEQ function
+dds_spz <- DESeq(dds_spz)
+
+# shrinked results conditionwise
+shres_spz_solo <- lfcShrink(dds_spz, type="apeglm", lfcThreshold=0,
+                            coef="sample_type_test_vs_control")
+
+shres_spz_solo_ashr <- lfcShrink(dds_spz, type="ashr", lfcThreshold=0,
+                            coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# spz-solo ashr
+sig_shres_spz_ashr <- shres_spz_solo_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# spz-solo apeglm
+sig_shres_spz <- shres_spz_solo %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+# Step 5: Analysis per single batch in both cell stages
+## In batch 1 of oocyst stage
+```{r batch1_oo}
+# * single experimental replicates ----
+# batch 1 oo ----
+dds_oo1 <- DESeqDataSetFromMatrix(countData = countData_oo1, 
+                                  colData = metaData_oo1,
+                                  design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_oo1 <- rowSums(counts(dds_oo1) >= 10) >= 3
+dds_oo1 <- dds_oo1[keep_oo1,]
+
+# apply DESEQ function
+dds_oo1 <- DESeq(dds_oo1)
+
+# shrinked results conditionwise
+shres_oo1 <- lfcShrink(dds_oo1, type="apeglm", lfcThreshold=0,
+                       coef="sample_type_test_vs_control")
+
+shres_oo1_ashr <- lfcShrink(dds_oo1, type="ashr", lfcThreshold=0,
+                            coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# oo1 ashr
+sig_shres_oo1_ashr <- shres_oo1_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# padj < 0.05: subset results to return genes ----
+# oo1 apeglm
+sig_shres_oo1 <- shres_oo1 %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+## In batch 2 of oocyst stage
+```{r batch2_oo}
+# batch 2 oo ----
+dds_oo2 <- DESeqDataSetFromMatrix(countData = countData_oo2, 
+                                  colData = metaData_oo2,
+                                  design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_oo2 <- rowSums(counts(dds_oo2) >= 10) >= 3
+dds_oo2 <- dds_oo2[keep_oo2,]
+
+# apply DESEQ function
+dds_oo2 <- DESeq(dds_oo2)
+
+# shrinked results conditionwise
+shres_oo2 <- lfcShrink(dds_oo2, type="apeglm", lfcThreshold=0, # warning message suggesting possible overparametrization, so check with ashr
+                       coef="sample_type_test_vs_control")
+
+shres_oo2_ashr <- lfcShrink(dds_oo2, type="ashr", lfcThreshold=0,
+                       coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# oo2 ashr
+sig_shres_oo2_ashr <- shres_oo2_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# oo2 apeglm
+sig_shres_oo2 <- shres_oo2 %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+## In batch 1 of sporozoite stage
+```{r batch1_spz}
+# batch 1 spz ----
+dds_spz1 <- DESeqDataSetFromMatrix(countData = countData_spz1, 
+                                   colData = metaData_spz1,
+                                   design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_spz1 <- rowSums(counts(dds_spz1) >= 10) >= 3
+dds_spz1 <- dds_spz1[keep_spz1,]
+
+# apply DESEQ function
+dds_spz1 <- DESeq(dds_spz1)
+
+# shrinked results conditionwise
+shres_spz1 <- lfcShrink(dds_spz1, type="apeglm", lfcThreshold=0,
+                        coef="sample_type_test_vs_control")
+
+shres_spz1_ashr <- lfcShrink(dds_spz1, type="ashr", lfcThreshold=0,
+                            coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# spz1 ashr
+sig_shres_spz1_ashr <- shres_spz1_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# spz1 apeglm
+sig_shres_spz1 <- shres_spz1 %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+## In batch 2 of sporozoite stage
+```{r batch2_spz}
+# batch 2 spz ----
+dds_spz2 <- DESeqDataSetFromMatrix(countData = countData_spz2, 
+                                   colData = metaData_spz2,
+                                   design = ~ sample_type, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep_spz2 <- rowSums(counts(dds_spz2) >= 10) >= 3
+dds_spz2 <- dds_spz2[keep_spz2,]
+
+# apply DESEQ function
+dds_spz2 <- DESeq(dds_spz2)
+
+# shrinked results conditionwise
+shres_spz2 <- lfcShrink(dds_spz2, type="apeglm", lfcThreshold=0,
+                        coef="sample_type_test_vs_control")
+
+shres_spz2_ashr <- lfcShrink(dds_spz2, type="ashr", lfcThreshold=0,
+                             coef="sample_type_test_vs_control")
+
+# padj < 0.05: subset results to return genes ----
+# spz2 ashr
+sig_shres_spz2_ashr <- shres_spz2_ashr %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# spz2 apeglm
+sig_shres_spz2 <- shres_spz2 %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+```
+
+# Step 6: Analysis of Aging
+```{r Aging}
+# * DEA AGING ALL SAMPLES: ----
+# build DEseq2 object for all the conditions
+# make DESeq matrix
+dds.aging <- DESeqDataSetFromMatrix(countData = countData, 
+                                    colData = metaData,
+                                    design = ~ infection_stage, tidy = FALSE)
+
+# filter out by at least 3 samples with a count of 10 or higher ----
+keep <- rowSums(counts(dds.aging) >= 10) >= 3
+dds.aging <- dds.aging[keep,]
+
+# apply DESEQ function ----
+dds.aging <- DESeq(dds.aging)
+
+# shrinked results conditionwise
+shres_aging <- lfcShrink(dds.aging, type="apeglm", lfcThreshold=0,
+                         coef=c("infection_stage_sporozoite_vs_oocyst"))
+
+# old VS young
+sig_shres_aging <- shres_aging %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+
+# up
+up_sig_shres_aging <- sig_shres_aging %>%
+  data.frame() %>%
+  as_tibble() %>% 
+  filter(log2FoldChange > 0)
+
+
+# down
+down_sig_shres_aging <- sig_shres_aging %>%
+  data.frame() %>%
+  as_tibble() %>% 
+  filter(log2FoldChange < 0)
+
+```
+
+# Step 7: Calculate DEGs among all sample replicates
+```{r Dist_calc, results='hide'}
+# * Plot distance among samples ----
+# build DEseq2 object for all the conditions
+# make DESeq matrix
+dds.distance <- DESeqDataSetFromMatrix(countData = countData,
+                                    colData = metaData,
+                                    design = ~ 1, tidy = F)
+
+# add phenofile cathegories interactions ("design" argument in the above function "DESeqDataSetFromMatrix")
+dds.distance$group <- factor(paste0(dds.distance$sample_type, dds.distance$infection_stage, dds.distance$batch))
+dds.distance$group <- relevel(dds.distance$group, ref = "controloocyst1")
+design(dds.distance) <- ~ group
+dds.distance$group <- gsub("3", "1", dds.distance$group)
+dds.distance$group <- gsub("4", "2", dds.distance$group)
+# Convert group to factor AFTER string substitution
+dds.distance$group <- factor(dds.distance$group)
+
+# filter out by at least 3 samples with a count of 10 or higher ----
+keep <- rowSums(counts(dds.distance) >= 10) >= 3
+dds.distance <- dds.distance[keep,]
+
+# apply DESEQ function
+dds.distance <- DESeq(dds.distance)
+
+#unique(dds.distance$group) # see the final values
+# Define your conditions
+conditions <- rev(c("controloocyst", "controlsporozoite", "testoocyst", "testsporozoite"))
+replicates <- 1:2  # assuming you have replicates 1 and 2
+
+# Initialize a list to store all results
+results_list <- list()
+
+# Generate all unique non-self pairs
+for (cond1 in conditions) {
+  for (rep1 in replicates) {
+    for (cond2 in conditions) {
+      for (rep2 in replicates) {
+# Skip self-comparisons
+        if (!(cond1 == cond2 && rep1 == rep2)) {
+# Create condition names
+          name1 <- paste0(cond1, rep1)
+          name2 <- paste0(cond2, rep2)
+# Create a meaningful name for the result
+          result_name <- paste0(gsub("control", "c", gsub("test", "", cond2)),
+                                rep2,
+                                gsub("control", "c", gsub("test", "", cond1)),
+                                rep1)
+# Perform the shrinkage
+          cat("Processing contrast:", name2, "vs", name1, "...\n")
+          res <- lfcShrink(dds.distance, type="ashr", lfcThreshold=0,
+                           contrast=c("group", name2, name1))
+# Store the result
+          results_list[[result_name]] <- res
+        }
+      }
+    }
+  }
+}
+
+
+# Apply filtering and formatting to all results
+sig_results <- lapply(results_list, function(res) {
+  res %>%
+    data.frame() %>%
+    rownames_to_column(var = "gene") %>%
+    as_tibble() %>%
+    filter(padj < 0.05)
+})
+
+
+# Define all conditions (same order as your matrix)
+conditions <- c("coocyst1", "coocyst2",
+                "csporozoite1", "csporozoite2",
+                "oocyst1", "oocyst2",
+                "sporozoite1", "sporozoite2")
+
+# initialize distance matrix
+distance_matrix <- matrix(0, nrow=length(conditions), ncol=length(conditions),
+                          dimnames=list(conditions, conditions))
+
+# Fill the matrix in a loop
+for (i in 1:length(conditions)) {
+  for (j in 1:length(conditions)) {
+    if (i == j) {
+      distance_matrix[i,j] <- 0  # Diagonal is zero
+    } else {
+# Construct the result object name
+      result_name <- paste0(conditions[j], conditions[i])
+
+# Check if this comparison exists in sigresults
+      if (exists(result_name, where = sig_results)) {
+        res <- sig_results[[result_name]]
+        distance_matrix[i,j] <- length(res$gene)  # Or your actual DEG count metric
+      } else {
+# Try reverse comparison if this one doesn't exist
+        reverse_name <- paste0(conditions[i], conditions[j])
+        if (exists(reverse_name, where = sig_results)) {
+          res <- sig_results[[reverse_name]]
+          distance_matrix[i,j] <- length(res$gene)  # Or your actual DEG count metric
+        } else {
+          distance_matrix[i,j] <- NA  # No comparison available
+        }
+      }
+    }
+  }
+}
+
+
+# Remove bottom part of the matrix (mirrored)
+distance_matrix[lower.tri(distance_matrix)] <- 0
+
+# save matrix
+sep.reps.distance <- distance_matrix
+
+# Melt the matrix
+melted_matrix <- as.data.frame(as.table(as.matrix(sep.reps.distance))) # for a distance matrix with empty diagonal
+
+# 5. Force column names to be exact
+names(melted_matrix) <- c("Var1", "Var2", "Value")
+```
+
+
+# Step 8: Gene enrichment analysis of aging related genes
+```{r Enrich}
+# * aging immune DEGs family enrichment ----
+# p-values are calculated using the upper-tail (right-tail) probability 
+# P(X ≥ a). The FDR is adjusted across all families using the Benjamini-Hochberg method.
+
+# * all DEGs
+# Parameters
+N <- 13845   # Total genes in Ag PEST genome
+n <- 4397    # Number of DEGs in aging analysis
+# Gene families: m = number in gene family, a = observed overlap
+# families taken form Christophides 2002 (doi: 10.1126/science.1077136), some families mentioned by Christophides
+# are absent because their gene name could not be found in the DEGs or in both degs and total gene list
+# the counts have been done manually due to impossibility to always assign univocal strings to the gene names of a given family
+families <- c("PGRP", "TEP", "GNBP", "SCR",
+              "CTL", "GALE", "CLIP", # "FBN",
+              "SRPN", "IAP", "TOLL + cactus", # "MyD88", "tube", "pelle",
+              "REL", "Imd",
+              "STAT", "PPO", "DEF", "CEC",
+              "CASP")
+m <- c(7, 14, 6, 18,
+       21, 9, 57,
+       14, 7, 8,
+       2, 1,
+       2, 9, 4, 3,
+       12) # total number of genes in the family in Ag PEST genome (accessed 2025-05-02, GCA_000005575.2, AgamP4.14)
+
+# NB: considered DEGs with logFC > |0.25|
+a <- c(3, 4, 0, 8,
+       8, 2, 29,
+       8, 1, 1,
+       0, 0,
+       1, 4, 0, 0,
+       0) # number of DEGs belonging to the family
+
+a_up <- c(2, 3, 0, 3,
+          4, 1, 27,
+          8, 0, 0,
+          0, 0,
+          1, 3, 0, 0,
+          0) # number of DEGs belonging to the family
+a_down <- c(1, 1, 0, 5,
+            4, 1, 2,
+            0, 1, 1,
+            0, 0,
+            0, 1, 0, 0,
+            0) # number of DEGs belonging to the family
+
+
+# ALL GENES
+# Calculate hypergeometric p-values
+p_values <- phyper(a-1, m, N-m, n, lower.tail = FALSE)
+# Calculate FDR (Benjamini-Hochberg)
+fdr <- p.adjust(p_values, method = "fdr")
+# Create a results table
+results <- data.frame(
+  Family = families,
+  m = m,
+  a = a,
+  p_value = p_values,
+  fdr = fdr
+)
+# Sort by FDR (ascending)
+results <- results[order(results$fdr), ]
+
+# * just upregulated genes
+# Parameters
+N <- 13845   # Total genes in Ag PEST genome
+n <- 2166    # Number of urpeg DEGs in aging analysis
+# ALL GENES
+# Calculate hypergeometric p-values
+p_values <- phyper(a_up-1, m, N-m, n, lower.tail = FALSE)
+# Calculate FDR (Benjamini-Hochberg)
+fdr <- p.adjust(p_values, method = "fdr")
+# Create a results table
+results <- data.frame(
+  Family = families,
+  m = m,
+  a = a_up,
+  p_value = p_values,
+  fdr = fdr
+)
+# Sort by FDR (ascending)
+results_up <- results[order(results$fdr), ]
+
+# * just downregulated genes
+# Parameters
+N <- 13845   # Total genes in Ag PEST genome
+n <- 2231    # Number of dowreg DEGs in aging analysis
+# ALL GENES
+# Calculate hypergeometric p-values
+p_values <- phyper(a_down-1, m, N-m, n, lower.tail = FALSE)
+# Calculate FDR (Benjamini-Hochberg)
+fdr <- p.adjust(p_values, method = "fdr")
+# Create a results table
+results <- data.frame(
+  Family = families,
+  m = m,
+  a = a_down,
+  p_value = p_values,
+  fdr = fdr
+)
+# Sort by FDR (ascending)
+results_down <- results[order(results$fdr), ]
+# Print the results
+
+```
+
+# Step 9: Plots {.tabset}
+```{r Plots_load}
+all_aging_info <- read.csv(file.path(projDir,"/Data/Bulk/FINAL_aging_genes.csv"), header = T, row.names = 1)
+```
+
+## PCA {.tabset}
+```{r Plots PCA}
+rld <- rlog(dds, blind = FALSE)
+
+# example pca
+# PC1,3
+pcaData_age <- alternative.pca1_3(rld, intgroup= "infection_stage", returnData=TRUE)
+percentVar_age <- round(100 * attr(pcaData_age, "percentVar"))
+ggplot(pcaData_age, aes(PC1, PC2, col = infection_stage, shape = infection_stage)) +
+  geom_point(size=2, shape=16) +
+  theme(
+    axis.text = element_text(size = 10),  # Smaller axis labels
+    axis.title = element_text(size = 10),  # Smaller PC_1 and PC_2 labels
+    legend.title = element_text(size = 10),  # Smaller legend title
+    legend.text = element_text(size = 10),  # Smaller legend text
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(colour = "black")
+  ) +
+  xlab(paste0("PC1: ",percentVar_age[1],"% variance")) +
+  ylab(paste0("PC3: ",percentVar_age[2],"% variance")) +
+  labs(colour="age") +
+  xlim(-30, 30) +
+  ylim(-30, 30) +
+  scale_color_manual(labels = c("14 days old", "22 days old"), values = c("orange2", "royalblue")) +
+  coord_fixed()
+```
+
+## Heatmap of top differentially expressed genes (adjusted p-value < 0.05) between 14. and 22 day old females.
+```{r Plots_heat, fig.width=10, fig.height=5}
+# top FC and FDR genes to plot ----
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2fc respectively positive or negative)
+all_aging_info$diffexpressed <- "NO"
+# if log2Foldchange > 0.5 and pvalue < 0.05, set as "UP"
+all_aging_info$diffexpressed[all_aging_info$log2FoldChange > 1.5 & all_aging_info$padj < 0.05] <- "UP"
+# if log2Foldchange < -0.5 and pvalue < 0.05, set as "DOWN"
+all_aging_info$diffexpressed[all_aging_info$log2FoldChange < -1.5 & all_aging_info$padj < 0.05] <- "DOWN"
+
+# which genes are there
+diffexpressed_top_genes <- all_aging_info %>% 
+  filter(diffexpressed != "NO")
+
+# get genes to plot
+# Filter the rows in diffexpressed_top_genes where p-value is < 10^20
+genes_to_plot_vp <- diffexpressed_top_genes[diffexpressed_top_genes$padj < 10^(-19), ]
+# * check if they are all present in all_aging_info ----
+plot_aging_strength <- Reduce(intersect, list(all_aging_info$gene, genes_to_plot_vp$gene))
+
+
+# heatmap top DEGs ----
+# plot trend of chosen genes of interest in the downloaded DEGs of aging
+# Define the list of genes
+gene_list <- rownames(genes_to_plot_vp)
+# in this case I put DEGs interesting in aging
+
+# extract the assay matrix from the transformed object
+mat.age <- assay(rlog(dds.aging, blind = FALSE))
+# Compute z-scores for each gene (row-wise scaling)
+z_scores.age <- t(scale(t(mat.age)))
+
+# extract data matrix
+expr_data <- z_scores.age
+
+# Filter for genes and columns of interest
+checked_data <- expr_data[rownames(expr_data) %in% gene_list, grep("^oocy|^sporo", colnames(expr_data))]
+
+# Check if checked_data has valid dimensions
+if (nrow(checked_data) == 0 | ncol(checked_data) == 0) {
+  stop("No matching genes or samples found.")
+}
+
+# Reorder the data matrix to match the order in gene_list
+ordered_data <- checked_data[match(gene_list, rownames(checked_data)), ]
+
+# get groups of virgin and mated samples
+oo_data <- checked_data[, grep("^oocy", colnames(checked_data))]
+spz_data <- checked_data[, grep("^sporo", colnames(checked_data))]
+
+# to order samples based on their average expression ofo the different genes
+# in the two groups, perform hierarchical clustering on each group separately
+oo_clustering <- hclust(dist(t(oo_data)))
+spz_clustering <- hclust(dist(t(spz_data)))
+
+# combine in the clustering order
+ordered_cols <- c(
+  colnames(oo_data)[oo_clustering$order],
+  colnames(spz_data)[spz_clustering$order]
+)
+# reorder the data matrix
+ordered_data <- checked_data[, ordered_cols]
+# reorder rows based on their log2FC (i.e. their order in gene_list)
+ordered_data <- ordered_data[match(gene_list, rownames(ordered_data)), ]
+
+# transform data for ggplot2
+long_data <- as.data.frame(ordered_data) %>%
+  rownames_to_column(var = "Gene") %>%
+  melt(id.vars = "Gene", variable.name = "Sample", value.name = "Expression")
+# Create a dataframe for sample type
+sample_type_df <- data.frame(
+  Sample = colnames(dds.aging),
+  sample_type = dds.aging$sample_type
+)
+# Create a dataframe for sample type
+sample_type_df <- data.frame(
+  Sample = colnames(dds.aging),
+  sample_type = dds.aging$sample_type,
+  Group = ifelse(grepl("^oocy", colnames(dds.aging)), "14 d.o.", "22 d.o.")
+)
+
+# Add sample_type to long_data
+long_data <- merge(long_data, sample_type_df, by = "Sample")
+# add sample group (young/old) for annotation
+long_data <- long_data %>%
+  mutate(Group = ifelse(grepl("^oocy", Sample), "14 d.o.", "22 d.o."))
+
+
+# plot heatmap
+# ggplot with gene names and sample bar
+ggplot() +
+  # Sample type color bar
+  geom_tile(data = distinct(sample_type_df),
+            aes(x = factor(Sample, levels = ordered_cols), 
+                y = "Sample Type", 
+                fill = sample_type)) +
+  scale_fill_manual(name = "Sample Type",
+                    values = c("control" = "magenta4", "test" = "#DC3220")) +
+  ggnewscale::new_scale_fill() +
+  
+  # Expression heatmap
+  geom_tile(data = long_data,
+            aes(x = factor(Sample, levels = ordered_cols), 
+                y = factor(Gene, levels = rev(gene_list)), 
+                fill = Expression)) +
+  scale_fill_viridis(option = "B", name = "Expression") +
+  
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    axis.text.y = element_text(size = 9),
+    axis.title = element_blank(),
+    legend.position = "right"
+  ) +
+  facet_grid(~Group, scales = "free_x", space = "free_x") +
+  labs(title = "Gene Expression Heatmap (14 d.o. and 22 d.o. Groups)") +
+  scale_y_discrete(labels = c("Sample Type" = "", gene_list))  # Hide label on the annotation bar
+
+```
+
+## Number of DEGs among all sample replicates  {.tabset}
+```{r Plots_distance}
+# 6. Plot with guaranteed correct column names
+ggplot(melted_matrix, aes(x=Var1, y=Var2, fill=Value)) +
+  geom_tile(color="white") +
+  scale_fill_viridis_c(name="# DEGs", option="plasma", na.value="white") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle=45, hjust=1, size=10),
+    axis.text.y = element_text(size=10)
+  ) +
+  labs(x="", y="") +
+  coord_fixed()
+
+```
+
