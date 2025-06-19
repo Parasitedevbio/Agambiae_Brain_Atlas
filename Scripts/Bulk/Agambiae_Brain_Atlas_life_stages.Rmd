@@ -1,0 +1,311 @@
+---
+title: 'The Anopheles mosquito brain at spatial and single-cell resolution: \n Analysis of life stages in Bulk Transcriptomics Data'
+author: "Irene Rossi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: false
+    keep_md: false
+    self_contained: yes
+---
+
+# Step 1: Load required packages & functions:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = F, error = F)
+```
+
+```{r seed}
+set.seed(1234)
+projDir<-here::here()
+```
+
+```{r packages, results='hide'}
+
+libs <- c("DESeq2","tidyverse","dplyr", "tidyr","reshape2", "readODS", "viridis", "cowplot")
+lapply(libs, library, character.only = TRUE)
+
+```
+
+# Step 2: Load relevant Data and adjust
+```{r load_data}
+countData <- read.csv(file.path(projDir,"/Data/Bulk/Ag_bulk_mating_matrix.csv"), header = T, sep = ",", row.names = 1, check.names = F)
+metaData <- read.csv(file.path(projDir,"/Data/Bulk/Ag_bulk_mating_meta.csv"), header = TRUE, sep = ",")
+```
+
+# Step 3: Normalise Data using DESeq2
+```{r DESeq}
+# build DEseq2 objects ----
+# create test vs ct objects ----
+# data to create a mating object
+countData_m <- countData %>% dplyr:: select(grep("virgin", names(countData)), grep("mated", names(countData)))
+metaData_m <- subset(metaData, blood.feeding.status %in% "Non_blood.fed")
+# order metadata to get it to match countData
+metaData_m <- metaData_m[order(metaData_m$mating.status, decreasing = T),]
+
+# data to create a blood-feeding object
+countData_bf <- countData %>% dplyr:: select(grep("mated", names(countData)), grep("BF", names(countData)))
+metaData_bf <- subset(metaData, mating.status %in% "mated")
+# order metadata to get it to match countData
+metaData_bf <- metaData_bf[order(metaData_bf$blood.feeding.status, decreasing = T),]
+
+dds.m <- DESeqDataSetFromMatrix(countData = countData_m, 
+                                colData = metaData_m, 
+                                design = ~ mating.status)
+
+dds.bf <- DESeqDataSetFromMatrix(countData = countData_bf, 
+                                 colData = metaData_bf, 
+                                 design = ~ blood.feeding.status)
+
+# filter out by at least 3 samples with a count of 10 or higher
+keep <- rowSums(counts(dds.m) >= 10) >= 3
+dds.m <- dds.m[keep,]
+
+keep <- rowSums(counts(dds.bf) >= 10) >= 3
+dds.bf <- dds.bf[keep,]
+
+####
+# Set the wanted condition as reference level
+dds.m$group <- factor(paste0(dds.m$mating.status, dds.m$blood.feeding.status))
+design(dds.m) <- ~ group
+dds.bf$group <- factor(paste0(dds.bf$mating.status, dds.bf$blood.feeding.status))
+design(dds.bf) <- ~ group
+# set reference level
+dds.m$group <- relevel(dds.m$group, "virginNon_blood.fed")
+
+dds.bf$group <- relevel(dds.bf$group, "matedNon_blood.fed")
+
+# apply DESEQ function ----
+dds.m <- DESeq(dds.m)
+
+dds.bf <- DESeq(dds.bf)
+
+```
+
+# Step 4: Clustering and GO Analysis
+## Mating
+```{r Clust_Mating}
+# EXPLORE EXPERIMENTAL CONDITIONS DEA ----
+# MATING ----
+# AAA: explore the two datasets (dds.m and dds.bf) separately and call them "dds"
+dds <- dds.m
+# shrinked results conditionwise ----
+shres_MvsV <- lfcShrink(dds, type="apeglm", lfcThreshold=0, 
+                        coef=c("group_matedNon_blood.fed_vs_virginNon_blood.fed"))
+# padj < 0.05: subset results to return genes ----
+sig_shres_MvsV <- shres_MvsV %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+# PCA rld ----
+# PC1,2 rld
+rld <- rlog(dds, blind = FALSE)
+# * plot PCA MATING for paper ----
+rld_m <- rld
+pcaData_m <- plotPCA(rld, intgroup=c("mating.status", "blood.feeding.status"), returnData=TRUE)
+percentVar_m <- round(100 * attr(pcaData_m, "percentVar"))
+Plot_PCA_Mating<-ggplot(pcaData_m, aes(PC1, PC2, col = mating.status)) +
+  geom_point(size=2, shape=16) +
+  xlab(paste0("PC1: ",percentVar_m[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_m[2],"% variance")) +
+  theme(
+    axis.text = element_text(size = 10),  # Smaller axis labels
+    axis.title = element_text(size = 10),  # Smaller PC_1 and PC_2 labels
+    legend.title = element_text(size = 10),  # Smaller legend title
+    legend.text = element_text(size = 10),  # Smaller legend text
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(colour = "black")
+  ) +
+  labs(colour="mating status") +
+  xlim(-30, 30) +
+  ylim(-30, 30) +
+  scale_color_manual(labels = c("mated", "virgin"), values = c("#FF9966", "aquamarine4")) +
+  coord_fixed()
+
+# (LFC = 0.25 i.e. ~20% difference in gene expr; FC ~ 1.19)
+LFChmMV <- (sig_shres_MvsV$log2FoldChange)
+LFChmMVhigh <- which(LFChmMV>0.25)
+LFChmMVlow <- which(LFChmMV<(-0.25))
+heatmapMVhigh <- sig_shres_MvsV[LFChmMVhigh, ]
+heatmapMVhigh <- heatmapMVhigh[order(heatmapMVhigh$log2FoldChange),]
+heatmapMVlow <- sig_shres_MvsV[LFChmMVlow, ]
+heatmapMVlow <- heatmapMVlow[order(heatmapMVlow$log2FoldChange),]
+
+```
+
+```{r GO_Mating}
+# GO analysis files ----
+# Export gene list for GO TERMS analysis
+# virgin vs mated
+DE_MVall1 <- which(abs(sig_shres_MvsV$log2FoldChange)>0.25)
+DE_MVall <- sig_shres_MvsV[DE_MVall1, ]
+DE_MVall <- DE_MVall[order(DE_MVall$log2FoldChange),]
+```
+
+## Blood Feeding
+```{r Clust_BF}
+# BLOOD-FEEDING ----
+dds <- dds.bf
+# shrinked results conditionwise ----
+shres_BFvsM <- lfcShrink(dds, type="apeglm", lfcThreshold=0, 
+                         coef=c("group_matedBlood.fed_vs_matedNon_blood.fed"))
+# padj < 0.05: subset results to return genes ----
+sig_shres_BFvsM <- shres_BFvsM %>%
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble() %>% 
+  filter(padj < 0.05)
+
+
+# PCA rld ----
+# PC1,2 rld
+rld <- rlog(dds, blind = FALSE)
+# * plot PCA BLOOD FEEDING for paper ----
+rld_bf <- rld
+pcaData_bf <- plotPCA(rld, intgroup=c("mating.status", "blood.feeding.status"), returnData=TRUE)
+percentVar_bf <- round(100 * attr(pcaData_bf, "percentVar"))
+Plot_PCA_BF<-ggplot(pcaData_bf, aes(PC1, PC2, col = blood.feeding.status, shape = blood.feeding.status)) +
+  geom_point(size=2, shape=16) +
+  xlab(paste0("PC1: ",percentVar_bf[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_bf[2],"% variance")) +
+  theme(
+    axis.text = element_text(size = 10),  # Smaller axis labels
+    axis.title = element_text(size = 10),  # Smaller PC_1 and PC_2 labels
+    legend.title = element_text(size = 10),  # Smaller legend title
+    legend.text = element_text(size = 10),  # Smaller legend text
+    panel.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(colour = "black")
+  ) +
+  labs(colour="condition") +
+  xlim(-30, 30) +
+  ylim(-30, 30) +
+  scale_color_manual(labels = c("mated blood-fed", "mated sugar-fed"), values = c("#CC0066", "#FF9966")) +
+  coord_fixed()
+
+
+# (LFC = 0.25 i.e. ~20% difference in gene expr; FC ~ 1.19)
+LFChbBFM <- (sig_shres_BFvsM$log2FoldChange)
+LFChbBFMhigh <- which(LFChbBFM>0.25)
+LFChbBFMlow <- which(LFChbBFM<(-0.25))
+heatmapBFMhigh <- sig_shres_BFvsM[LFChbBFMhigh, ]
+heatmapBFMhigh <- heatmapBFMhigh[order(heatmapBFMhigh$log2FoldChange),]
+heatmapBFMlow <- sig_shres_BFvsM[LFChbBFMlow, ]
+heatmapBFMlow <- heatmapBFMlow[order(heatmapBFMlow$log2FoldChange),]
+```
+
+```{r GO_BF}
+# GO analysis files ----
+# Export gene list for GO TERMS analysis
+# virgin vs mated
+DE_BFMall1 <- which(abs(sig_shres_BFvsM$log2FoldChange)>0.25)
+DE_BFMall <- sig_shres_BFvsM[DE_BFMall1, ]
+DE_BFMall <- DE_BFMall[order(DE_BFMall$log2FoldChange),]
+
+```
+
+# Step 5: Plots {.tabset}
+## Clustering {.tabset .tabset-dropdown}
+### Mating Status {.tabset}
+```{r Plots_PCA_mating , fig.width=6, fig.height=5}
+Plot_PCA_Mating
+```
+
+### Feeding Status {.tabset}
+```{r Plots_PCA_BF, fig.width=6, fig.height=5}
+Plot_PCA_BF
+```
+
+## Heatmap {.tabset}
+```{r Plots_heat}
+# * plots ----
+# enrichment was curated based on VB GO, cytoscape ClueGO (including KEGG info) and manually (since some families are not well classified)
+# data from dds.bf rlog transformed
+# heatmap bfm ----
+# plot trend of chosen genes of interest in the downloaded DEGs of mv
+# Define the list of genes
+bfm_degs_all <- read.csv(file.path(projDir,"/Data/Bulk/plotDEGs_bulk_bfm.csv"))
+# these genes have been obtained based on GO terms filtering (sheet1), and additional genes have been manually added
+
+gene_list <- bfm_degs_all$gene_id  # your actual gene list in the order you want
+# in this case I put DEGs (upreg) in bf
+
+# extract the assay matrix from the transformed object
+mat.bf <- assay(rld_bf)
+# Compute z-scores for each gene (row-wise scaling)
+z_scores.bf <- t(scale(t(mat.bf)))
+
+# extract data matrix
+expr_data <- z_scores.bf
+
+
+# Filter for genes and columns of interest
+checked_data <- expr_data[rownames(expr_data) %in% gene_list, grep("_mated$|_BF$", colnames(expr_data))]
+
+# Check if checked_data has valid dimensions
+if (nrow(checked_data) == 0 | ncol(checked_data) == 0) {
+  stop("No matching genes or samples found.")
+}
+
+# Reorder the data matrix to match the order in gene_list
+ordered_data <- checked_data[match(gene_list, rownames(checked_data)), ]
+
+# get groups of mated and blood-fed samples
+mated_data <- checked_data[, grep("_mated$", colnames(checked_data))]
+bloodfed_data <- checked_data[, grep("_BF$", colnames(checked_data))]
+
+# to order samples based on their average expression of the different genes
+# in the two groups, perform hierarchical clustering on each group separately
+mated_clustering <- hclust(dist(t(mated_data)))
+bloodfed_clustering <- hclust(dist(t(bloodfed_data)))
+
+# combine in the clustering order
+ordered_cols <- c(
+  colnames(mated_data)[mated_clustering$order],
+  colnames(bloodfed_data)[bloodfed_clustering$order]
+)
+# reorder the data matrix
+ordered_data <- checked_data[, ordered_cols]
+# reorder rows based on their log2FC (i.e. their order in gene_list)
+ordered_data <- ordered_data[match(gene_list, rownames(ordered_data)), ]
+
+# transform data for ggplot2
+long_data <- as.data.frame(ordered_data) %>%
+  rownames_to_column(var = "Gene") %>%
+  melt(id.vars = "Gene", variable.name = "Sample", value.name = "Expression")
+# add sample group (bloodfed/Mated) for annotation
+long_data <- long_data %>%
+  mutate(Group = ifelse(grepl("_BF$", Sample), "Bloodfed", "Mated"))
+
+# plot heatmap
+ggplot(long_data, aes(x = factor(Sample, levels = ordered_cols), y = factor(Gene, levels = rev(gene_list)), fill = Expression)) +
+  geom_tile() +
+  scale_fill_viridis(option = "B") +
+  # alternative: 
+  #scale_fill_gradient2(low = "white", high = "violetred4", mid = "yellow", 
+  #                      midpoint = median(long_data$Expression), 
+  #                      name = "Expression") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    axis.title = element_blank(),
+    legend.position = "right"
+  ) +
+  facet_grid(~Group, scales = "free_x", space = "free_x") +
+  labs(title = "Gene Expression Heatmap (Bloodfed and Mated Groups)", fill = "Expression")
+
+```
+
+
+# Session Info
+```{r sessionInfo}
+sessionInfo()
+```
+

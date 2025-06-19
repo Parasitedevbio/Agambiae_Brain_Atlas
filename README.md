@@ -1,5 +1,6 @@
 # Agambiae_Brain_Atlas
 This repository contains the code for the analysis of single-cell RNA-seq, bulk RNA-seq and Spatial Transcriptomic Data from Rossi et al., 2025.
+Count data and annotation files can be downloaded from https://drive.ird.fr/s/2ZT82yTJmprftfR.
 
 Hematophagy in Anopheles mosquitoes is at the root of all malaria infections and is supported by a range of physiological and behavioural adaptations of the vector. However, the cellular and molecular mechanisms underlying mosquito behavior are almost uncharted. As an insect’s behavior is orchestrated at the level of its central nervous system, we determined the cell type composition of the female Anopheles gambiae brain. We further leveraged spatially-resolved transcriptomics to understand how this cellular diversity is organised in the mosquito head. Finally, we describe transcriptional changes associated with mosquito life history events (mating, blood-feeding, Plasmodium falciparum infection, age). Our atlas provides the first map of the malaria mosquito brain, and aims to serve as a resource which will enable the study of non-model insect neurobiology, the neural basis of vector behavior and mechanisms underlying malaria transmission
 

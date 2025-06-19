@@ -1,0 +1,263 @@
+---
+title: 'The Anopheles mosquito brain at spatial and single-cell resolution: \n Analyis of Single Cell Transcriptomics Data'
+author: "Irene Rossi, Johannes W. Bagnoli"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: false
+    keep_md: false
+    self_contained: yes
+---
+
+# Step 1: load required packages & functions:
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = F, error = F)
+```
+
+```{r seed}
+set.seed(666)
+projDir<-here::here()
+```
+
+```{r packages, results='hide'}
+libs <- c("Seurat","dplyr","SeuratData", "SeuratWrappers", "limma","scCustomize","patchwork","ggplot2", "cowplot","glmGamPoi", "DoubletFinder", "ROCR", "Matrix", "plyr", "pagoda2", "tidyverse", "MAST", "grid", "viridis")
+lapply(libs, library, character.only = TRUE)
+```
+
+```{r functions_preprocess}
+preprocess<- function(paramdf){
+  object_list<-list()
+  for (i in 1:nrow(paramdf)){
+    print(paramdf$file[i])
+    ## Creating Seurat objects, add meta data, and filter
+    object_list[[i]] <- CreateSeuratObject(counts = Read_CellBender_h5_Mat(paramdf$file[i]), min.cells = paramdf$min.cells[i], min.features = paramdf$min.features[i])
+    object_list[[i]] <- RenameCells(object = object_list[[i]], add.cell.id = paramdf$sample[i])
+    object_list[[i]]@meta.data$sample <- paramdf$sample[i]
+    object_list[[i]]@meta.data$condition <- paramdf$condition[i]
+    object_list[[i]]@meta.data$percent_apopt <- PercentageFeatureSet(object_list[[i]], features = intersect(mt_vector, rownames(object_list[[i]])))
+    object_list[[i]] <- subset(object_list[[i]], nFeature_RNA > paramdf$nFeature[i] & nCount_RNA > paramdf$nCount[i] & percent_apopt < 20)
+    ## sctransform
+    object_list[[i]] <- SCTransform(object_list[[i]], vst.flavor = "v2", vars.to.regress = "percent_apopt", verbose = FALSE) # you can ignore the warnings
+    object_list[[i]] <- RunPCA(object_list[[i]], npcs = 40, verbose = FALSE)
+    object_list[[i]] <- RunUMAP(object_list[[i]], reduction = "pca", dims = 1:40, verbose = FALSE)
+    object_list[[i]] <- FindNeighbors(object_list[[i]], reduction = "pca", dims = 1:40, verbose = FALSE)
+    object_list[[i]] <- FindClusters(object_list[[i]], resolution = 1, verbose = FALSE)
+    ## Sweep thingy
+    sweep.res <- DoubletFinder::paramSweep(object_list[[i]], sct = T)
+    sweep.stats <- summarizeSweep(sweep.res, GT = FALSE)
+    bcmvn <- find.pK(sweep.stats)
+    for_pK <- bcmvn[bcmvn$BCmetric == max(bcmvn$BCmetric), ]
+    pK <- as.vector(for_pK$pK[[1]])
+    pK <- as.numeric(pK)
+    nExp_poi <- round(0.15*nrow(object_list[[i]]@meta.data))
+    object_list[[i]] <- DoubletFinder::doubletFinder(object_list[[i]], pK = pK, nExp = nExp_poi, sct = T, PCs = 1:10)
+    DF.name <- colnames( object_list[[i]]@meta.data)[grepl("DF.classification", colnames(object_list[[i]]@meta.data))]
+    object_list[[i]] <- object_list[[i]][, object_list[[i]]@meta.data[, DF.name] == "Singlet"]
+    ## Save filter objects
+    saveRDS(object_list[[i]] , paste0(projDir,"/Data/SingleCell/cellbender/filtered/cb_", paramdf$sample[i], "_filtered.rds") )
+  }
+  ## integrate ----
+  mating.cb.features <- SelectIntegrationFeatures(object.list = object_list, nfeatures = 3000)
+  object_list <- PrepSCTIntegration(object.list = object_list, anchor.features = mating.cb.features)
+  ## find anchors and integrate
+  mating.cb.anchors <- FindIntegrationAnchors(object.list = object_list, normalization.method = "SCT", anchor.features = mating.cb.features)
+  mating.cb.sct <- IntegrateData(anchorset = mating.cb.anchors, normalization.method = "SCT") # the normalization method used is specified
+  return(mating.cb.sct)
+}
+```
+
+```{r functions_labs}
+palette <- c("khaki", "#FAEBD7", "chocolate4", "burlywood", "#E79EB9", "#D5529C", "darkseagreen", "darkgoldenrod", "#C91C8C", "#D740AF", "#FF6600", "lightblue", "turquoise", "#E564D3", "#FF1144", "darkblue", "#C3CCFF", "turquoise4", "darkgreen", "#005AB5", "blue", "#F083E4", "#F69CDA", "#FFC20A", "#6BB5FF", "orange","#FCB5CF", "#E6ACB6", "#D6003D", "#BC8A94", "#66CCFF", "indianred3", "#FF1144", "#936972", "royalblue1", "turquoise3", "#3399FF", "darkgreen", "#8B5064", "olivedrab3", "olivedrab", "slateblue4", "slateblue", "#8B395B", "#8B2252")
+# customize plot with cluster numbers
+# order labels numerically
+labels <- c(
+  "An0 Neural progenitors (eye), numb, AGAP029444",
+  "An1, vacht",
+  "An2 adPN, IPN, OPN, vacht",
+  "An3 Neural progenitors, AGAP005138",
+  "An4, MIP, GPRMTH3, CNMaR",
+  "An5, vacht",
+  "An6 Pm neurons, ISL, Lhx3",
+  "An7 Octopaminergic, Dh31",
+  "An8, gad1, alpha6",
+  "An9, AGAP000215, AGAP029578",
+  "An10 Ensheathing, cortex and astrocyte-like glia, AGAP001185, AGAP012059",
+  "An11 lamina neurons, LNvs, vacht, AGAP009132",
+  "An12 Optic lobe cells, lachesin, AGAP010223",
+  "An13, Arrowhead, AGAP006540",
+  "An14 G-KC, A/B-KC, dop1r2, AGAP000731",
+  "An15 Photoreceptors, AGAP029557, ARR2",
+  "An16 Tm1/TmY8, AGAP008585, MIP",
+  "An17 Optic lobe cells, AGAP010221, MIP, dpr2",
+  "An18 CCAP/circadian clock neurons, Fer2, ccap",
+  "An19 L2, AGAP001913, lachesin",
+  "An20 T3, AGAP010014, AGAP008868",
+  "An21, AGAP009964, AGAP008980",
+  "An22, carbonic anhydrase, DOPA N-acetyltransferase",
+  "An23 Astrocyte-like glia, lipophorin, AGAP001499",
+  "An24 L4/L5, Tm9, AGAP009302",
+  "An25 Surface glia, Tret1",
+  "An26, vglut, AGAP005681",
+  "An27, vacht, vglut",
+  "An28 A/B*-KC, dop1r2, AGAP000731, DRN-3",
+  "An29, allatotropin",
+  "An30 L3, LNvs, AGAP001913",
+  "An31 A/B-KC, AGAP013324, putative DhR2",
+  "An32 G-KC, A/B-KC, AGAP000731, dop1R2",
+  "An33, gamma-sarcoglycan, putative mAChR-B",
+  "An34 T4/T5, AGAP008868",
+  "An35 Optic lobe cells, AGAP005096, AGAP003871",
+  "An36 L1, AGAP001913, putative GABA-BR3",
+  "An37 CCAP/circadian clock neurons, Fer2, ccap, pdh",
+  "An38 Oenocytoids, scrb9",
+  "An39 C2, C3, AGAP001913, gad1",
+  "An40 Pm neurons, hph, gad1, putative mAChR-B",
+  "An41 Poxn neurons, poxn",
+  "An42 Granulocytes, col4a",
+  "An43, AGAP011094",
+  "An44, AGAP005311"
+)
+# extract the numeric part
+numbers <- as.numeric(sub("An(\\d+).*", "\\1", labels))
+# sort labels
+sorted_labels <- labels[order(numbers)]
+```
+
+# Step 2: load data and annotation files
+```{r load_mt, eval=FALSE}
+## loading mitochondiral gene annotation
+mt_gtf <- read.table(file.path(projDir,"/Data/Annotations/AgamP4_Mt.gtf"), header = FALSE, sep = '\t')
+df_mt <- as.data.frame(mt_gtf)
+mt_vector <- df_mt$V9
+mt_vector <- gsub(".*gene_id ", "", as.character(mt_vector))
+mt_vector <- gsub(";","", as.character(mt_vector))
+mt_vector <- unique(mt_vector)
+```
+
+# Step 3: Creation of seurat object, QC and integration of datasets
+```{r preprocess, eval=FALSE}
+paramdf<-data.frame(file=list.files(paste0(projDir,"/Data/SingleCell/cellbender/"), full.names = T, pattern = "*.h5"),
+                    min.cells=c(5,5,5,5,5,5),
+                    min.features=c(350,350,350,350,350,350),
+                    sample=c("B1", "B2", "M1", "M2","V1", "V2"),
+                    condition=c("blood-fed","blood-fed" ,"mated","mated", "virgin","virgin"),
+                    nFeature=c(800,800,800,800,800,800),
+                    nCount=c(1000,1000,1000,1000,1000,1000)
+                    )
+
+mating.cb.sct<-preprocess(paramdf)
+```
+
+# Step 4: Normalisation & clustering 
+```{r Norm_clust, eval=FALSE}
+DefaultAssay(mating.cb.sct) <- "integrated"
+mating.cb.sct <- RunPCA(mating.cb.sct, verbose = F, dims = 1:40)
+mating.cb.sct <- RunUMAP(mating.cb.sct, seed.use = 123, dims = 1:40)
+mating.cb.sct <- FindNeighbors(mating.cb.sct, dims = 1:40)
+mating.cb.sct <- FindClusters(mating.cb.sct, random.seed = 123, resolution = 0.7, verbose = F)
+```
+
+# Step 5: Find Markers of clusters
+```{r Find_Mark, eval=FALSE}
+DefaultAssay(mating.cb.sct) <- "SCT"
+mating.cb.sct <- PrepSCTFindMarkers(mating.cb.sct, assay = "SCT")
+
+Idents(mating.cb.sct) <- "seurat_clusters"
+seu.clust.markers <- FindAllMarkers(mating.cb.sct, only.pos = TRUE,
+                                    min.pct = 0.25, logfc.threshold = 0.25, TEST.USE = "MAST")
+sig.seu.clust.markers <- seu.clust.markers[seu.clust.markers$p_val_adj<0.05,]
+```
+
+## Adding info
+```{r ctype_info, eval=FALSE}
+Ctype_annotation<-read.csv(file.path(projDir, "/Data/Annotations/best_hits_SAMap.csv"), row.names = 1, sep=",", header=T)
+
+# get matching cluster IDs between Seurat object and Ctype_annotation table
+matching_clusters <- intersect(rownames(Ctype_annotation), levels(mating.cb.sct$seurat_clusters))
+# add annotation information
+for (cluster_id in matching_clusters) {
+  cluster_indices <- which(mating.cb.sct$seurat_clusters == cluster_id)
+  annotation_info <- Ctype_annotation[cluster_id, ]
+  # add annotation information to metadata columns
+  mating.cb.sct@meta.data[cluster_indices, "Annotation_cluster" ] <- annotation_info["Annotation_cluster" ]
+  mating.cb.sct@meta.data[cluster_indices, "Annotation_cell_type"] <- annotation_info["Annotation_cell_type"]
+}
+```
+
+# Step 6: Plotting {.tabset}
+```{r Plots_load}
+mating.cb.sct.plot<- readRDS("/home/TALMAN/Analysis/R_proj/Agambiae_Brain_Atlas_JWB/Data/SingleCell/atlas_dataset.rds")
+```
+
+## UMAP {.tabset}
+```{r Plots_UMAP}
+# reorder the Annotation (cell type) column
+mating.cb.sct.plot@meta.data$`Annotation (cell type)` <- factor(
+  mating.cb.sct.plot@meta.data$`Annotation (cell type)`,
+  levels = sorted_labels
+)
+# get legend
+legend.annotat <- get_legend(DimPlot(mating.cb.sct.plot, cols = palette, reduction = "umap", group.by = "seurat_clusters", label = F))#, na.value = "antiquewhite"))
+
+# get cluster centroids
+cluster_centers <- aggregate(Embeddings(mating.cb.sct.plot, "umap"), 
+                             by = list(mating.cb.sct.plot@meta.data$seurat_clusters), 
+                             FUN = mean)
+colnames(cluster_centers) <- c("seurat_clusters", "UMAP_1", "UMAP_2")  # rename columns
+
+Plot_Umap<-DimPlot(mating.cb.sct.plot, cols = palette, reduction = "umap", 
+        group.by = "seurat_clusters") +#, na.value = "antiquewhite") + 
+  theme(legend.position = "none") +
+  geom_text(data = cluster_centers, aes(x = UMAP_1, y = UMAP_2, 
+                                        label = seurat_clusters), 
+            color = "black", size = 3, fontface = "plain")
+
+cowplot::plot_grid(Plot_Umap, legend.annotat, rel_widths = c(5,1))
+```
+
+## Heatmap {.tabset}
+```{r Plots_Heatmap, fig.width=20, fig.height=8}
+# data to be plotted
+data.heatmap <- mating.cb.sct.plot
+matrix.data.sct <- data.heatmap@assays$SCT@data
+matrix.data.sct <- scale(matrix.data.sct)
+
+data.heatmap@assays$heatmap <- data.heatmap@assays$SCT
+data.heatmap@assays$heatmap$scale.data<- matrix.data.sct
+DefaultAssay(data.heatmap) <- "heatmap"
+
+
+new_order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,41,43,44,40,8,7,31,37,15,23,10,25,38,42)
+final_colors <- c("#66CCFF", "#6BB5FF", "lightblue", "turquoise", "#E79EB9", "#C3CCFF", "turquoise4", "#005AB5", "blue", "#F083E4", "#F69CDA", "#D6003D", "#BC8A94",  "royalblue1",
+                  "#E564D3", "darkgreen", "#FAEBD7", "chocolate4", "#D5529C", "#FF1144", "turquoise3", "#FF1144", "khaki", "#E6ACB6", "darkseagreen", "#D740AF", "#FCB5CF", "#3399FF",
+                  "#936972", "olivedrab3", "burlywood", "slateblue4", "#8B395B", "#8B2252", "olivedrab", "#C91C8C", "darkgoldenrod", "indianred3", "darkgreen", "darkblue", "#FFC20A", "#FF6600", "orange", "#8B5064", "slateblue")
+
+data.heatmap$seurat_clusters <- factor(data.heatmap$seurat_clusters, levels = new_order)
+
+# glia heatmap of feature expression
+# genes and names for all plots will need them
+glia.markers <- c("AGAP005639", "AGAP001185", "AGAP001499", "AGAP005223", "AGAP012059", "AGAP002291", "AGAP000278", "AGAP029242", "AGAP011948", "AGAP005563", "AGAP008943")
+glia.markers.names <- c("ABC transporter (Family B member 2)", "SCMT1 (AGAP001185)", "AGAP001499", "AGAP005223", "AGAP012059", "ebony", "obp9", "repo", "thr3DH", "tret1",  "turtle")
+
+# then modify the y axis names with cell types in post-production as in cluster_color_mapping_ordered
+Plot_heatmap<-DoHeatmap(subset(data.heatmap, downsample = 500), group.colors = final_colors,
+          features = glia.markers, size = 3, group.by = "seurat_clusters") + # default slot "scale.data", put slot = data to get just normalized counts
+  scale_fill_viridis(option = "B") +
+  scale_y_discrete(labels = rev(glia.markers.names)) +
+  theme(axis.text.y = element_text(face = "italic")) +
+  theme(legend.position="none")
+legend.heatmap.glia.markers <- get_legend(DoHeatmap(subset(data.heatmap, downsample = 500), group.colors = final_colors,
+                                                    features = glia.markers, size = 3, group.by = "seurat_clusters") +
+                                            scale_fill_viridis(option = "B") +
+                                            scale_y_discrete(labels = rev(glia.markers.names)) +
+                                            theme(axis.text.y = element_text(face = "italic")))
+grid.newpage()
+cowplot::plot_grid(Plot_heatmap, legend.heatmap.glia.markers, rel_widths = c(10,1))
+```
+
+# Session Info
+```{r sesion_info}
+sessionInfo()
+```
+
