@@ -21,7 +21,7 @@ projDir<-here::here()
 ```
 
 ```{r packages, results='hide'}
-libs <- c("Seurat","dplyr","SeuratData", "SeuratWrappers", "limma","scCustomize","patchwork","ggplot2", "cowplot","glmGamPoi", "DoubletFinder", "ROCR", "Matrix", "plyr", "pagoda2", "tidyverse", "MAST", "grid", "viridis")
+libs <- c("Seurat","dplyr","SeuratData", "SeuratWrappers", "limma","scCustomize","patchwork","ggplot2", "cowplot","glmGamPoi", "DoubletFinder", "ROCR", "Matrix", "plyr", "pagoda2", "tidyverse", "MAST", "grid", "viridis", "scales", "reshape2")
 lapply(libs, library, character.only = TRUE)
 ```
 
@@ -68,55 +68,58 @@ preprocess<- function(paramdf){
 ```
 
 ```{r functions_labs}
-palette <- c("khaki", "#FAEBD7", "chocolate4", "burlywood", "#E79EB9", "#D5529C", "darkseagreen", "darkgoldenrod", "#C91C8C", "#D740AF", "#FF6600", "lightblue", "turquoise", "#E564D3", "#FF1144", "darkblue", "#C3CCFF", "turquoise4", "darkgreen", "#005AB5", "blue", "#F083E4", "#F69CDA", "#FFC20A", "#6BB5FF", "orange","#FCB5CF", "#E6ACB6", "#D6003D", "#BC8A94", "#66CCFF", "indianred3", "#FF1144", "#936972", "royalblue1", "turquoise3", "#3399FF", "darkgreen", "#8B5064", "olivedrab3", "olivedrab", "slateblue4", "slateblue", "#8B395B", "#8B2252")
+palette <- c("khaki", "#FAEBD7", "#E79EB9", "chocolate4", "darkseagreen", "#D5529C", "#C91C8C", "darkgoldenrod", "burlywood", "#330000", "#FF6600",
+                 "lightblue", "turquoise", "#E564D3", "#FF1144", "darkblue", "#D740AF", "turquoise4", "#990066", "#005AB5", "#6699CC", "#F083E4", "#F69CDA",
+                 "#FFC20A", "#6BB5FF", "orange", "indianred3", "#E6ACB6", "#D6003D", "#BC8A94", "#66CCFF", "#FCB5CF", "#CC0000", "#936972", "royalblue1",
+                 "turquoise3", "#3399FF", "darkgreen", "slateblue4", "#C3CCFF", "blue", "#8B5064", "slateblue", "#8B395B", "#8B2252")
 # customize plot with cluster numbers
 # order labels numerically
 labels <- c(
-  "An0 Neural progenitors (eye), numb, AGAP029444",
-  "An1, vacht",
-  "An2 adPN, IPN, OPN, vacht",
-  "An3 Neural progenitors, AGAP005138",
-  "An4, MIP, GPRMTH3, CNMaR",
-  "An5, vacht",
-  "An6 Pm neurons, ISL, Lhx3",
-  "An7 Octopaminergic, Dh31",
-  "An8, gad1, alpha6",
-  "An9, AGAP000215, AGAP029578",
-  "An10 Ensheathing, cortex and astrocyte-like glia, AGAP001185, AGAP012059",
-  "An11 lamina neurons, LNvs, vacht, AGAP009132",
-  "An12 Optic lobe cells, lachesin, AGAP010223",
-  "An13, Arrowhead, AGAP006540",
-  "An14 G-KC, A/B-KC, dop1r2, AGAP000731",
-  "An15 Photoreceptors, AGAP029557, ARR2",
-  "An16 Tm1/TmY8, AGAP008585, MIP",
-  "An17 Optic lobe cells, AGAP010221, MIP, dpr2",
-  "An18 CCAP/circadian clock neurons, Fer2, ccap",
-  "An19 L2, AGAP001913, lachesin",
-  "An20 T3, AGAP010014, AGAP008868",
-  "An21, AGAP009964, AGAP008980",
-  "An22, carbonic anhydrase, DOPA N-acetyltransferase",
-  "An23 Astrocyte-like glia, lipophorin, AGAP001499",
-  "An24 L4/L5, Tm9, AGAP009302",
-  "An25 Surface glia, Tret1",
-  "An26, vglut, AGAP005681",
-  "An27, vacht, vglut",
-  "An28 A/B*-KC, dop1r2, AGAP000731, DRN-3",
-  "An29, allatotropin",
-  "An30 L3, LNvs, AGAP001913",
-  "An31 A/B-KC, AGAP013324, putative DhR2",
-  "An32 G-KC, A/B-KC, AGAP000731, dop1R2",
-  "An33, gamma-sarcoglycan, putative mAChR-B",
-  "An34 T4/T5, AGAP008868",
-  "An35 Optic lobe cells, AGAP005096, AGAP003871",
-  "An36 L1, AGAP001913, putative GABA-BR3",
-  "An37 CCAP/circadian clock neurons, Fer2, ccap, pdh",
-  "An38 Oenocytoids, scrb9",
-  "An39 C2, C3, AGAP001913, gad1",
-  "An40 Pm neurons, hph, gad1, putative mAChR-B",
-  "An41 Poxn neurons, poxn",
-  "An42 Granulocytes, col4a",
-  "An43, AGAP011094",
-  "An44, AGAP005311"
+    "Ag0 Neuroblast",
+    "Ag1 Neurons",
+    "Ag2 Neurons",
+    "Ag3 GABAergic neurons",
+    "Ag4 Optic lobe neurons",
+    "Ag5 Neurons",
+    "Ag6 Neurons",
+    "Ag7 Monoaminergic neurons",
+    "Ag8 GABAergic neurons",
+    "Ag9 Glutamatergic neurons",
+    "Ag10 Neuropil-associated glia",
+    "Ag11 Lamina neurons",
+    "Ag12 Optic lobe neurons",
+    "Ag13 Neurons",
+    "Ag14 Kenyon cells (type I)",
+    "Ag15 Photoreceptor neurons",
+    "Ag16 Neurons",
+    "Ag17 Optic lobe neurons",
+    "Ag18 Neurons",
+    "Ag19 Lamina neurons",
+    "Ag20 Neurons",
+    "Ag21 Neurons",
+    "Ag22 Neurons",
+    "Ag23 Astrocyte-like glia",
+    "Ag24 L4/L5-like neurons",
+    "Ag25 Surface glia",
+    "Ag26 Glutamatergic and cholinergic neurons",
+    "Ag27 Neurons",
+    "Ag28 Kenyon cells (type II)",
+    "Ag29 Neurons",
+    "Ag30 Optic lobe neurons",
+    "Ag31 Neurons",
+    "Ag32 Kenyon cells (type III)",
+    "Ag33 Neurons",
+    "Ag34 Optic lobe neurons",
+    "Ag35 Optic lobe neurons",
+    "Ag36 Optic lobe neurons",
+    "Ag37 Clock neurons",
+    "Ag38 Oenocytoids",
+    "Ag39 Optic lobe neurons (putative C2/C3)",
+    "Ag40 Optic lobe neurons (putative Pm)",
+    "Ag41 Central complex (poxn neurons)",
+    "Ag42 Granulocytes",
+    "Ag43 GABAergic neurons",
+    "Ag44 GABAergic neurons"
 )
 # extract the numeric part
 numbers <- as.numeric(sub("An(\\d+).*", "\\1", labels))
@@ -229,9 +232,7 @@ DefaultAssay(data.heatmap) <- "heatmap"
 
 
 new_order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,41,43,44,40,8,7,31,37,15,23,10,25,38,42)
-final_colors <- c("#66CCFF", "#6BB5FF", "lightblue", "turquoise", "#E79EB9", "#C3CCFF", "turquoise4", "#005AB5", "blue", "#F083E4", "#F69CDA", "#D6003D", "#BC8A94",  "royalblue1",
-                  "#E564D3", "darkgreen", "#FAEBD7", "chocolate4", "#D5529C", "#FF1144", "turquoise3", "#FF1144", "khaki", "#E6ACB6", "darkseagreen", "#D740AF", "#FCB5CF", "#3399FF",
-                  "#936972", "olivedrab3", "burlywood", "slateblue4", "#8B395B", "#8B2252", "olivedrab", "#C91C8C", "darkgoldenrod", "indianred3", "darkgreen", "darkblue", "#FFC20A", "#FF6600", "orange", "#8B5064", "slateblue")
+final_colors <- c(#66CCFF, #6BB5FF, lightblue, turquoise, darkseagreen, #D740AF, turquoise4, #005AB5, #6699CC, #F083E4, #F69CDA, #D6003D, #BC8A94, royalblue1, #E564D3, #990066, #FAEBD7, #E79EB9, #D5529C, #FF1144, turquoise3, #CC0000, khaki, #E6ACB6, #C91C8C, #330000, indianred3, #3399FF, #936972, #C3CCFF, chocolate4, #8B5064, #8B395B, #8B2252, blue, burlywood, darkgoldenrod, #FCB5CF, darkgreen, darkblue, #FFC20A, #FF6600, orange, slateblue4, slateblue)
 
 data.heatmap$seurat_clusters <- factor(data.heatmap$seurat_clusters, levels = new_order)
 
