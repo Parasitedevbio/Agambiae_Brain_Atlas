@@ -220,7 +220,8 @@ EotM<-function(object, cluster, paramdf, genes, gorder= NULL){
         scale_y_reverse()+
         theme_bw()+
         scale_color_manual(values = cols_cl, name="Cluster")+
-        #ggtitle(paste0(brains[i], " left side"))+guides(colour=F)+
+        #ggtitle(paste0(brains[i], " left side"))+
+        guides(colour=F)+
         xlab("")+ylab("")
       
       
@@ -242,7 +243,7 @@ EotM<-function(object, cluster, paramdf, genes, gorder= NULL){
         scale_y_reverse()+
         theme_bw()+xlab("")+ylab("")
       
-      max_dist<- max(left_list[[i]]$data$zoomdistance_0 )
+      max_dist<- max(left_list[[i]]$data$zoom$distance_0 )
       left_list[[i]]$data$zoom$distance_edge<-max_dist-left_list[[i]]$data$zoom$distance_0  
       left_list[[i]]$plots$DistanceEdge<-ggplot()+
         geom_point(data=dfplot, aes(x=y_rot_scaled, y=x_rot_scaled),colour="black", size=0.5, alpha=0.5)+
@@ -860,8 +861,7 @@ blocs<- c("bloc2", "bloc4")
 
 counts <- as.matrix(combined@assays$RNA$counts)# extracts counts matrix of spatial data (before Filtering)
 
-rm(combined,ref_sc, ref_counts)
-gc()
+
 
 RCTD_list<-list()
 for (i in 1:length(blocs)){
@@ -875,6 +875,11 @@ for (i in 1:length(blocs)){
    RCTD_list[[i]]<- run.RCTD( RCTD_list[[i]], doublet_mode = 'full')
  }
 
+```
+
+```{r clean-ref}
+rm(combined,ref_sc, ref_counts)
+gc()
 ```
 
 ```{r RCTD_load}
@@ -1086,12 +1091,12 @@ distances_df_mean2$Comp2<-factor(as.character(distances_df_mean2$Comp2), levels=
 
 # Step 12: Spatial Expression within the eye
 ```{r Eye}
-zoom_df<- data.frame(Brain_ID=c ("bloc4_4"),
-                      side=c("right"),
-                      limit_x_rot=c(-75),
-                      limit_y_rot=c( 100),
-                      center_x_rot=c(-75),
-                      center_y_rot=c(100))
+zoom_df<- data.frame(Brain_ID=c ("bloc2_1", "bloc2_4", "bloc4_3", "bloc4_4"),
+                      side=c("right","left","right","right"),
+                      limit_x_rot=c(50,0,100, -75),
+                      limit_y_rot=c(250,-100,100, 100),
+                      center_x_rot=c(50,0,100,-75),
+                      center_y_rot=c(250,-100,100,100))
 
 # Create custm gene list starting from providing gene names, requires gene annotation
 customgenepanel<-All_genes_AgamP4_PEST$Gene.stable.ID[All_genes_AgamP4_PEST$Gene.name %in% c( "CPR132",  "ARR2", "GPROP8","AGAP002291", "AGAP001913", "AGAP000965")]
@@ -1184,56 +1189,115 @@ ggplot()+
 ```
 
 ## Eye section {.tabset}
-### Example of Spatial Markers {.tabset}
-```{r Plots_SpatialMarkers, fig.height=7, fig.width=15}
+### Example of Spatial Markers {.tabset-dropdown}
+#### Bloc2_1 {.tabset}
+```{r Plots_SpatialMarkers_b2_1, fig.height=9, fig.width=18}
+a<-cowplot::plot_grid(custom_EOTM$right$bloc2_1$plots$Selection, custom_EOTM$right$bloc2_1$plots$DistanceEdge)
+cowplot::plot_grid(a, custom_EOTM$right$bloc2_1$plots$Geneplot_spatial, custom_EOTM$right$bloc2_1$plots$Distancebox_edge,custom_EOTM$right$bloc2_1$plots$Geneplot_edge, ncol=2)
+```
+
+#### Bloc2_4 {.tabset}
+```{r Plots_SpatialMarkers_2_4, fig.height=9, fig.width=18}
+a<-cowplot::plot_grid(custom_EOTM$left$bloc2_4$plots$Selection, custom_EOTM$left$bloc2_4$plots$DistanceEdge)
+cowplot::plot_grid(a, custom_EOTM$left$bloc2_4$plots$Geneplot_spatial, custom_EOTM$left$bloc2_4$plots$Distancebox_edge,custom_EOTM$left$bloc2_4$plots$Geneplot_edge, ncol=2)
+```
+
+#### Bloc4_3 {.tabset}
+```{r Plots_SpatialMarkers_b4_3, fig.height=9, fig.width=18}
+a<-cowplot::plot_grid(custom_EOTM$right$bloc4_3$plots$Selection, custom_EOTM$right$bloc4_3$plots$DistanceEdge)
+cowplot::plot_grid(a, custom_EOTM$right$bloc4_3$plots$Geneplot_spatial, custom_EOTM$right$bloc4_3$plots$Distancebox_edge,custom_EOTM$right$bloc4_3$plots$Geneplot_edge, ncol=2)
+```
+
+#### Bloc4_4 {.tabset}
+```{r Plots_SpatialMarkers_b4_4, fig.height=9, fig.width=18}
 a<-cowplot::plot_grid(custom_EOTM$right$bloc4_4$plots$Selection, custom_EOTM$right$bloc4_4$plots$DistanceEdge)
 cowplot::plot_grid(a, custom_EOTM$right$bloc4_4$plots$Geneplot_spatial, custom_EOTM$right$bloc4_4$plots$Distancebox_edge,custom_EOTM$right$bloc4_4$plots$Geneplot_edge, ncol=2)
 ```
 
 ### Spatially varbiable genes  {.tabset}
-```{r Plots_SpatialVariable, fig.height=10, fig.width=5}
-filt_expr<-list()
+```{r Plots_SpatialVariable, fig.height=10, fig.width=20}
+filt_expr_right<-list()
 for (i in 1:length(Fit_all$right)){
   data_long<-filter(Fit_all$right[[i]]$data$ExpressionData, Gene.stable.ID %in% Fit_all$right[[i]]$data$NatSpline_stats$.id[Fit_all$right[[i]]$data$NatSpline_stats$adj.r_squ > 0.1])
   expr_ranges_filt<-filter(Fit_all$right[[i]]$data$expr_ranges, Max-Min >1.5)
-  filt_expr[[i]]<-filter(data_long, Gene.stable.ID %in% expr_ranges_filt$Gene.stable.ID)
-  max_dist<- max(filt_expr[[i]]$distance_0)
-  filt_expr[[i]]$distance_from_edge<- max_dist-filt_expr[[i]]$distance_0
-  names(filt_expr)[i]<- names(Fit_all$right)[i]
+  filt_expr_right[[i]]<-filter(data_long, Gene.stable.ID %in% expr_ranges_filt$Gene.stable.ID)
+  max_dist<- max(filt_expr_right[[i]]$distance_0)
+  filt_expr_right[[i]]$distance_from_edge<- max_dist-filt_expr_right[[i]]$distance_0
+  names(filt_expr_right)[i]<- names(Fit_all$right)[i]
 }
 
-filt_expr_comb<-bind_rows(filt_expr, .id = "Brain_ID")
+filt_expr_comb_right<-bind_rows(filt_expr_right, .id = "Brain_ID")
+
+
+
+filt_expr_left<-list()
+for (i in 1:length(Fit_all$left)){
+  data_long<-filter(Fit_all$left[[i]]$data$ExpressionData, Gene.stable.ID %in% Fit_all$left[[i]]$data$NatSpline_stats$.id[Fit_all$left[[i]]$data$NatSpline_stats$adj.r_squ > 0.1])
+  expr_ranges_filt<-filter(Fit_all$left[[i]]$data$expr_ranges, Max-Min >1.5)
+  filt_expr_left[[i]]<-filter(data_long, Gene.stable.ID %in% expr_ranges_filt$Gene.stable.ID)
+  max_dist<- max(filt_expr_left[[i]]$distance_0)
+  filt_expr_left[[i]]$distance_from_edge<- max_dist-filt_expr_left[[i]]$distance_0
+  names(filt_expr_left)[i]<- names(Fit_all$left)[i]
+}
+
+filt_expr_comb_left<-bind_rows(filt_expr_left, .id = "Brain_ID")
+
+
+filt_expr_comb<-rbind(filt_expr_comb_right, filt_expr_comb_left)
+
+
+
 
 Brain_genes<-unique(filt_expr_comb[, c("Brain_ID", "Gene.name")])
 Brain_genes<- as.data.frame(table(Brain_genes$Gene.name))
 
-### model the clusters distribution
-dist_clus_filt<-list()
+
+
+dist_clus_filt_right<-list()
 for (i in 1:length(Fit_all$right)){
   zoom<- Fit_all$right[[i]]$data$zoom
   zoom$Distance_bin<-cut(x = zoom$distance_0,breaks=seq(1,max(zoom$distance_0)+10, 10))
   dist_clus<-as.data.frame(table(zoom$Distance_bin, zoom$Sp_clusters))
   colnames(dist_clus)<-c("Distance_bin",  "Sp_clusters",  "Freq")
   dist_clus$Distance_bin_numeric<-sapply(as.character(dist_clus$Distance_bin), function(x){as.numeric(strsplit(strsplit(x, split = ",", fixed = T)[[1]][1], split = "(", fixed = T)[[1]][2])})
-  dist_clus_filt[[i]]<-filter(dist_clus,Sp_clusters %in% c(0,1,2,4,5,8) )
-  max_dist<- max(dist_clus_filt[[i]]$Distance_bin_numeric)
-  dist_clus_filt[[i]]$distance_from_edge<- max_dist-dist_clus_filt[[i]]$Distance_bin_numeric
-  names(dist_clus_filt)[i]<- names(Fit_all$right)[i]
-  }
+  dist_clus_filt_right[[i]]<-filter(dist_clus,Sp_clusters %in% c(0,1,2,4,5,8) )
+  max_dist<- max(dist_clus_filt_right[[i]]$Distance_bin_numeric)
+  dist_clus_filt_right[[i]]$distance_from_edge<- max_dist-dist_clus_filt_right[[i]]$Distance_bin_numeric
+  names(dist_clus_filt_right)[i]<- names(Fit_all$right)[i]
+}
+dist_clus_filt_com_right<-bind_rows(dist_clus_filt_right, .id = "Brain_ID")
 
-dist_clus_filt_com<-bind_rows(dist_clus_filt, .id = "Brain_ID")
+dist_clus_filt_left<-list()
+for (i in 1:length(Fit_all$left)){
+  zoom<- Fit_all$left[[i]]$data$zoom
+  zoom$Distance_bin<-cut(x = zoom$distance_0,breaks=seq(1,max(zoom$distance_0)+10, 10))
+  dist_clus<-as.data.frame(table(zoom$Distance_bin, zoom$Sp_clusters))
+  colnames(dist_clus)<-c("Distance_bin",  "Sp_clusters",  "Freq")
+  dist_clus$Distance_bin_numeric<-sapply(as.character(dist_clus$Distance_bin), function(x){as.numeric(strsplit(strsplit(x, split = ",", fixed = T)[[1]][1], split = "(", fixed = T)[[1]][2])})
+  dist_clus_filt_left[[i]]<-filter(dist_clus,Sp_clusters %in% c(0,1,2,4,5,8) )
+  max_dist<- max(dist_clus_filt_left[[i]]$Distance_bin_numeric)
+  dist_clus_filt_left[[i]]$distance_from_edge<- max_dist-dist_clus_filt_left[[i]]$Distance_bin_numeric
+  names(dist_clus_filt_left)[i]<- names(Fit_all$left)[i]
+}
 
-dist_clus_filt_com_mean<- dist_clus_filt_com %>% group_by(Sp_clusters, distance_from_edge) %>% summarise(Mean_Freq=mean(Freq)) %>% as.data.frame()
+dist_clus_filt_com_left<-bind_rows(dist_clus_filt_left, .id = "Brain_ID")
+
+
+dist_clus_filt_com<-rbind(dist_clus_filt_com_right, dist_clus_filt_com_left)
+
+
+dist_clus_filt_com_mean<- dist_clus_filt_com %>% group_by(Sp_clusters, distance_from_edge,Brain_ID) %>% summarise(Mean_Freq=mean(Freq)) %>% as.data.frame()
+
 
 ### Get the peak from the modeled expression
-assigned_list<-list()
+assigned_list_right<-list()
 for (i in 1:length(Fit_all$right)){
   assignedDF<-data.frame()
-  for (j in unique(filt_expr[[i]]$Gene.stable.ID)){
+  for (j in unique(filt_expr_right[[i]]$Gene.stable.ID)){
     daje<-data.frame(distance_0=seq(from=1, to= max(Fit_all$right[[i]]$data$zoom$distance_0), by=10),norm_Expr=predict(Fit_all$right[[i]]$NatSplineFits[[j]], newdata=data.frame(distance_0=seq(from=1, to=max(Fit_all$right[[i]]$data$zoom$distance_0),, by=10))))
     peaks<- daje %>% top_n(wt = norm_Expr,n = 1) %>% .$distance_0
     
-    assigned_clusters<-filter(dist_clus_filt[[i]], Distance_bin_numeric == peaks ) %>% top_n(wt = Freq, n =1 ) %>% .$Sp_clusters
+    assigned_clusters<-filter(dist_clus_filt_right[[i]], Distance_bin_numeric == peaks ) %>% top_n(wt = Freq, n =1 ) %>% .$Sp_clusters
     max_dist<- max(Fit_all$right[[i]]$data$zoom$distance_0)
     ascl<-paste0(assigned_clusters, collapse = "_")
     ascl_peaks<-peaks
@@ -1242,24 +1306,48 @@ for (i in 1:length(Fit_all$right)){
     
     assignedDF<-rbind(assignedDF, tmpdf)
   }
-  assigned_list[[i]]<-dplyr::left_join(filt_expr[[i]], assignedDF, by="Gene.stable.ID")
-  names(assigned_list)[i]<- names(Fit_all$right)[i]
+  assigned_list_right[[i]]<-dplyr::left_join(filt_expr_right[[i]], assignedDF, by="Gene.stable.ID")
+  names(assigned_list_right)[i]<- names(Fit_all$right)[i]
 }
 
-assigned_list_com<-bind_rows(assigned_list, .id = "Brain_ID")
+assigned_list_right_com<-bind_rows(assigned_list_right, .id = "Brain_ID")
 
+assigned_list_left<-list()
+for (i in 1:length(Fit_all$left)){
+  assignedDF<-data.frame()
+  for (j in unique(filt_expr_left[[i]]$Gene.stable.ID)){
+    daje<-data.frame(distance_0=seq(from=1, to= max(Fit_all$left[[i]]$data$zoom$distance_0), by=10),norm_Expr=predict(Fit_all$left[[i]]$NatSplineFits[[j]], newdata=data.frame(distance_0=seq(from=1, to=max(Fit_all$left[[i]]$data$zoom$distance_0),, by=10))))
+    peaks<- daje %>% top_n(wt = norm_Expr,n = 1) %>% .$distance_0
+    
+    assigned_clusters<-filter(dist_clus_filt_left[[i]], Distance_bin_numeric == peaks ) %>% top_n(wt = Freq, n =1 ) %>% .$Sp_clusters
+    max_dist<- max(Fit_all$left[[i]]$data$zoom$distance_0)
+    ascl<-paste0(assigned_clusters, collapse = "_")
+    ascl_peaks<-peaks
+    ascl_peaksedge<-max_dist-peaks
+    tmpdf<- data.frame(assigned_clusters=ascl,Gene.stable.ID=j, peak_bin=ascl_peaks, peak_bin_from_edge= ascl_peaksedge)
+    
+    assignedDF<-rbind(assignedDF, tmpdf)
+  }
+  assigned_list_left[[i]]<-dplyr::left_join(filt_expr_left[[i]], assignedDF, by="Gene.stable.ID")
+  names(assigned_list_left)[i]<- names(Fit_all$left)[i]
+}
 
-assigned_list_mean <- assigned_list_com[, c("Gene.name","Gene.stable.ID", "peak_bin_from_edge", "norm_Expr")] %>% group_by(Gene.name,Gene.stable.ID) %>% summarise(mean_peak_bin_from_edge= mean(peak_bin_from_edge), mean_norm_Expr= mean(norm_Expr))
+assigned_list_left_com<-bind_rows(assigned_list_left, .id = "Brain_ID")
+
+assigned_list_com <- rbind(assigned_list_right_com, assigned_list_left_com)
+
+assigned_list_mean <- assigned_list_com[, c("Brain_ID","Gene.name","Gene.stable.ID", "peak_bin_from_edge", "norm_Expr")] %>% group_by(Brain_ID,Gene.name,Gene.stable.ID) %>% summarise(mean_peak_bin_from_edge= mean(peak_bin_from_edge), mean_norm_Expr= mean(norm_Expr))
 assigned_list_com_wide <- unique(assigned_list_com[, c("Gene.name", "Brain_ID", "assigned_clusters")]) %>% pivot_wider(names_from = Brain_ID, values_from =assigned_clusters )
 
 assigned_list_mean_Brain_genes<- filter(assigned_list_mean, Gene.name %in% Brain_genes$Var1[Brain_genes$Freq > 1])
+
 
 ggplot()+
   geom_smooth(data = dist_clus_filt_com_mean, aes(x=distance_from_edge*0.647, y=Mean_Freq, colour=Sp_clusters),method = "lm",formula = y ~ ns(x, 10), se=F)+
   geom_label_repel(data = assigned_list_mean_Brain_genes, aes(x=mean_peak_bin_from_edge*0.647, y=3*mean_norm_Expr, label=Gene.name),size=3, max.overlaps = 500)+
   theme_bw()+  scale_color_manual(values=cols_cl, name=("Spatial Clusters"))+ scale_x_continuous(breaks = c(0,50,100,150,200,250,300))+
   scale_y_continuous(name = "Cluster Abundance", sec.axis = sec_axis(~./3, name="Mean normalized Expression")  )+xlab("Mean distance from edge of the eye [µm]")+coord_flip()+
-  guides(colour = guide_legend(override.aes = list(size=10)))
+  guides(colour = guide_legend(override.aes = list(size=10)))+facet_wrap(~Brain_ID, ncol=4)
 ```
 
 # Session Info
