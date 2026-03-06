@@ -232,7 +232,7 @@ DefaultAssay(data.heatmap) <- "heatmap"
 
 
 new_order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,41,43,44,40,8,7,31,37,15,23,10,25,38,42)
-final_colors <- c(#66CCFF, #6BB5FF, lightblue, turquoise, darkseagreen, #D740AF, turquoise4, #005AB5, #6699CC, #F083E4, #F69CDA, #D6003D, #BC8A94, royalblue1, #E564D3, #990066, #FAEBD7, #E79EB9, #D5529C, #FF1144, turquoise3, #CC0000, khaki, #E6ACB6, #C91C8C, #330000, indianred3, #3399FF, #936972, #C3CCFF, chocolate4, #8B5064, #8B395B, #8B2252, blue, burlywood, darkgoldenrod, #FCB5CF, darkgreen, darkblue, #FFC20A, #FF6600, orange, slateblue4, slateblue)
+final_colors <- c("#66CCFF", "#6BB5FF", "lightblue", "turquoise", "darkseagreen", "#D740AF", "turquoise4", "#005AB5", "#6699CC", "#F083E4", "#F69CDA", "#D6003D", "#BC8A94", "royalblue1", "#E564D3", "#990066", "#FAEBD7", "#E79EB9", "#D5529C", "#FF1144", "turquoise3", "#CC0000", "khaki", "#E6ACB6", "#C91C8C", "#330000", "indianred3", "#3399FF", "#936972", "#C3CCFF", "chocolate4", "#8B5064", "#8B395B", "#8B2252", "blue", "burlywood", "darkgoldenrod", "#FCB5CF", "darkgreen", "darkblue", "#FFC20A", "#FF6600", "orange", "slateblue4", "slateblue")
 
 data.heatmap$seurat_clusters <- factor(data.heatmap$seurat_clusters, levels = new_order)
 
