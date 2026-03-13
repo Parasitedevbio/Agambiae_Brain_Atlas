@@ -67,6 +67,43 @@ preprocess<- function(paramdf){
 }
 ```
 
+```{r functions_DEGcomp}
+# DEA and comparison to bulk RNA-seq significant DEG lists
+# Function to run DEG analysis on seurat object per cluster between conditions
+## Params
+### object: seurat object
+### Cons: name of column having condition to be checked against each other
+### Uno: name of query condition to be checked
+### Due: name of baseline condition to be checked
+### subs: name of column harboring the identity in which DEG should be performed, default seurat_clusters
+### th.fc: log fold change threshold, default 0.25
+### th.pval: p value threshold, default 0.05
+### th.pct: percentage of cells expressing the genes threshold, default 0.25
+### testo: test to be used, default MAST
+### subs_prefix: character of prefix for naming of subs, default "Cluster_"
+### do_general: logical, whether to perform DEG analysis also on complete data set without sub-setting, default TRUE
+FindMarkers_perCond<- function(object,Cons,Uno,Due,subs,th.fc = 0.25,th.pval = 0.05,th.pct = 0.25,testo = "MAST", subs_prefix="Cluster_", do_general = TRUE){
+  Idents(object) <- object@meta.data[[subs]]
+  loops<- length(unique(Idents(object)))
+  DEG_list<-list()
+  for (i in 1:loops){
+    print(paste0(subs_prefix, sort(unique(Idents(object)))[i]))
+    DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]<-list()
+    DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]$Allgenes <- FindMarkers(object=object, ident.1 = Uno, ident.2 = Due, group.by=Cons, subset.ident = sort(unique(Idents(object)))[i], min.pct = 0, min.cells.feature = 0, min.cells.group = 0, recorrect_umi=FALSE, logfc.threshold = 0,test.use=testo)
+    DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]$Allgenes$Gene.stable.ID<-rownames(DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]$Allgenes)
+    DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]$Significant <- filter(DEG_list[[paste0(subs_prefix, sort(unique(Idents(object)))[i])]]$Allgenes, p_val_adj <= th.pval & abs(avg_log2FC) > th.fc & (pct.1 > th.pct | pct.2 > th.pct ) )
+  }
+  if (do_general == TRUE){
+    print("General DEG")
+    DEG_list[["general"]]<-list()
+    DEG_list[["general"]]$Allgenes <- FindMarkers(object=object, ident.1 = Uno , ident.2 = Due , group.by=Cons, min.pct = 0, min.cells.feature = 0, min.cells.group = 0, recorrect_umi=FALSE, logfc.threshold = 0, test.use=testo)
+    DEG_list[["general"]]$Allgenes$Gene.stable.ID<-rownames(DEG_list[["general"]]$Allgenes)
+    DEG_list[["general"]]$Significant <- filter( DEG_list[["general"]]$Allgenes, p_val_adj <= th.pval & abs(avg_log2FC) > th.fc & (pct.1 > th.pct | pct.2 > th.pct ) )
+  }
+  return(DEG_list)
+}
+```
+
 ```{r functions_labs}
 palette <- c("khaki", "#FAEBD7", "#E79EB9", "chocolate4", "darkseagreen", "#D5529C", "#C91C8C", "darkgoldenrod", "burlywood", "#330000", "#FF6600",
                  "lightblue", "turquoise", "#E564D3", "#FF1144", "darkblue", "#D740AF", "turquoise4", "#990066", "#005AB5", "#6699CC", "#F083E4", "#F69CDA",
@@ -188,9 +225,50 @@ for (cluster_id in matching_clusters) {
 }
 ```
 
-# Step 6: Plotting {.tabset}
+# Step 6: Comparison of Differential gene expression between bulk and sinlge cell {.tabset}
+```{r DEG_perclusters, eval=FALSE}
+virgin <-FindMarkers_perCond(object = mating.cb.sct,
+                         Cons ="condition",
+                          Uno = "virgin",
+                          Due = "mated",
+                          subs = "seurat_clusters",
+                          th.fc = 0.25,
+                          th.pval = 0.05,
+                          th.pct = 0.25,
+                          testo = "MAST",
+                          subs_prefix="Cluster_",
+                          do_general = TRUE)
+
+# mated
+mated <-FindMarkers_perCond(object = mating.cb.sct,
+                               Cons ="condition",
+                               Uno = "mated",
+                               Due = "virgin",
+                               subs = "seurat_clusters",
+                               th.fc = 0.25,
+                               th.pval = 0.05,
+                               th.pct = 0.25,
+                               testo = "MAST",
+                               subs_prefix="Cluster_",
+                               do_general = TRUE)
+
+# blood-fed
+bf <-FindMarkers_perCond(object = mating.cb.sct,
+                              Cons ="condition",
+                              Uno = "blood-fed",
+                              Due = "mated",
+                              subs = "seurat_clusters",
+                              th.fc = 0.25,
+                              th.pval = 0.05,
+                              th.pct = 0.25,
+                              testo = "MAST",
+                              subs_prefix="Cluster_",
+                              do_general = TRUE)
+```
+
+# Step 7: Plotting {.tabset}
 ```{r Plots_load}
-mating.cb.sct.plot<- readRDS("/home/TALMAN/Analysis/R_proj/Agambiae_Brain_Atlas_JWB/Data/SingleCell/atlas_dataset.rds")
+mating.cb.sct.plot<- readRDS(file.path(projDir,"Data/SingleCell/atlas_dataset.rds"))
 ```
 
 ## UMAP {.tabset}
@@ -232,7 +310,11 @@ DefaultAssay(data.heatmap) <- "heatmap"
 
 
 new_order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,41,43,44,40,8,7,31,37,15,23,10,25,38,42)
-final_colors <- c("#66CCFF", "#6BB5FF", "lightblue", "turquoise", "darkseagreen", "#D740AF", "turquoise4", "#005AB5", "#6699CC", "#F083E4", "#F69CDA", "#D6003D", "#BC8A94", "royalblue1", "#E564D3", "#990066", "#FAEBD7", "#E79EB9", "#D5529C", "#FF1144", "turquoise3", "#CC0000", "khaki", "#E6ACB6", "#C91C8C", "#330000", "indianred3", "#3399FF", "#936972", "#C3CCFF", "chocolate4", "#8B5064", "#8B395B", "#8B2252", "blue", "burlywood", "darkgoldenrod", "#FCB5CF", "darkgreen", "darkblue", "#FFC20A", "#FF6600", "orange", "slateblue4", "slateblue")
+final_colors <- c("#66CCFF","#6BB5FF", "lightblue", "turquoise", "darkseagreen", "#D740AF", "turquoise4",
+"#005AB5","#6699CC","#F083E4","#F69CDA","#D6003D","#BC8A94","royalblue1","#E564D3","#990066","#FAEBD7",
+"#E79EB9","#D5529C","#FF1144","turquoise3","#CC0000","khaki","#E6ACB6","#C91C8C","#330000","indianred3",
+"#3399FF","#936972","#C3CCFF","chocolate4","#8B5064","#8B395B","#8B2252","blue","burlywood","darkgoldenrod",
+"#FCB5CF","darkgreen","darkblue","#FFC20A","#FF6600","orange","slateblue4","slateblue")
 
 data.heatmap$seurat_clusters <- factor(data.heatmap$seurat_clusters, levels = new_order)
 
@@ -256,6 +338,392 @@ legend.heatmap.glia.markers <- get_legend(DoHeatmap(subset(data.heatmap, downsam
 grid.newpage()
 cowplot::plot_grid(Plot_heatmap, legend.heatmap.glia.markers, rel_widths = c(10,1))
 ```
+
+## Differential gene expression {.tabset .tabset-dropdown }
+```{r load_DEGloops}
+virgin <- readRDS(paste0(projDir,"/Data/SingleCell/DEG/virgin_scMAST.Rds"))
+mated <- readRDS(paste0(projDir,"/Data/SingleCell/DEG/mated_scMAST.Rds"))
+bf <- readRDS(paste0(projDir,"/Data/SingleCell/DEG/bf_scMAST.Rds"))
+
+
+# lists of significant DEGs from bulk RNA-seq
+DE_MVall <- read.csv(paste0(projDir,"/Data/Bulk/DEG/DE_MVall.csv"), header = T, sep = ",")
+DE_BFMall <- read.csv(paste0(projDir,"/Data/Bulk/DEG/DE_BFMall.csv"), header = T, sep = ",")
+```
+
+```{r extract_sig}
+# upreg in bulk V
+DEGbulk_up_V1 <- DE_MVall[DE_MVall$log2FoldChange < 0,]
+DEGbulk_up_V <- DEGbulk_up_V1$gene
+# upreg in bulk M
+DEGbulk_up_M1 <- DE_MVall[DE_MVall$log2FoldChange > 0,]
+DEGbulk_up_M <- DEGbulk_up_M1$gene
+# upreg in bulk BF
+DEGbulk_up_BF1 <- DE_BFMall[DE_BFMall$log2FoldChange > 0,]
+DEGbulk_up_BF <- DEGbulk_up_BF1$gene
+# downreg in bulk BF
+DEGbulk_down_BF1 <- DE_BFMall[DE_BFMall$log2FoldChange < 0,]
+DEGbulk_down_BF <- DEGbulk_down_BF1$gene
+
+# Get gene lists ----
+# ***either mating-induced (significant)
+clust_dea_m <- mated[names(mated) != "general"]
+
+# get significant genes
+# if wanting to select for Bonferroni:
+m_clust_sig <- lapply(clust_dea_m, function(cluster) {
+  if ("Significant" %in% names(cluster)) {
+    return(cluster$Significant)
+  } else {
+    return(NULL)  # or data.frame() for empty clusters
+  }
+})
+
+
+# genes m
+up_genes_m <- unique(unlist(lapply(m_clust_sig, function(sig_m) {
+  if (nrow(sig_m) > 0 && "avg_log2FC" %in% colnames(sig_m)) {
+    rownames(sig_m)[sig_m$avg_log2FC > 0]
+  } else {
+    character(0)
+  }
+})))
+
+down_genes_m <- unique(unlist(lapply(m_clust_sig, function(sig_m) {
+  if (nrow(sig_m) > 0 && "avg_log2FC" %in% colnames(sig_m)) {
+    rownames(sig_m)[sig_m$avg_log2FC < 0]
+  } else {
+    character(0)
+  }
+})))
+
+# ***or blood meal-induced (significant)
+# remove "general" element
+clust_dea_bf <- bf[names(bf) != "general"]
+# get significant elements
+bf_clust_sig <- lapply(clust_dea_bf, function(cluster) {
+  if ("Significant" %in% names(cluster)) {
+    return(cluster$Significant)
+  } else {
+    return(NULL)  # or data.frame() for empty clusters
+  }
+})
+# genes bf
+up_genes_bf <- unique(unlist(lapply(bf_clust_sig, function(sig_df) {
+  if (nrow(sig_df) > 0 && "avg_log2FC" %in% colnames(sig_df)) {
+    rownames(sig_df)[sig_df$avg_log2FC > 0]
+  } else {
+    character(0)
+  }
+})))
+
+down_genes_bf <- unique(unlist(lapply(bf_clust_sig, function(sig_df) {
+  if (nrow(sig_df) > 0 && "avg_log2FC" %in% colnames(sig_df)) {
+    rownames(sig_df)[sig_df$avg_log2FC < 0]
+  } else {
+    character(0)
+  }
+})))
+
+```
+
+### Dotplots  {.tabset }
+#### Mating Status {.tabset }
+```{r DEG_Dot_Mating, fig.width=12, fig.height=5}
+# mated ----
+unique_mated_up <- setdiff(up_genes_m, DEGbulk_up_M)
+unique_mated_down <- setdiff(down_genes_m, DEGbulk_up_V)
+
+# Extract data from mated list, including all clusters
+cluster_names <- names(m_clust_sig)
+
+# Create a dataframe with counts and percentages
+result_df_m <- data.frame()
+
+for (cluster in cluster_names) {
+  sig_genes <- m_clust_sig[[cluster]]  # data.frame with rownames
+  
+  if (nrow(sig_genes) > 0) {
+    # Extract each cluster's sig genes
+    up_genes <- rownames(sig_genes)[sig_genes$avg_log2FC > 0]
+    down_genes <- rownames(sig_genes)[sig_genes$avg_log2FC < 0]
+    
+    up_count <- length(up_genes)
+    down_count <- length(down_genes)
+    
+    # % overlap with unique genes
+    up_pct <- ifelse(up_count > 0, mean(up_genes %in% unique_mated_up) * 100, 0)
+    down_pct <- ifelse(down_count > 0, mean(down_genes %in% unique_mated_down) * 100, 0)
+    
+  } else {
+    up_count <- down_count <- 0
+    up_pct <- down_pct <- 0
+  }
+  
+  # Add to result dataframe
+  temp_df <- data.frame(
+    cluster = gsub("Cluster_", "", cluster),
+    regulation = c("up", "down"),
+    count = c(up_count, down_count),
+    pct_unique = c(up_pct, down_pct)
+  )
+  
+  result_df_m <- rbind(result_df_m, temp_df)
+}
+
+
+# Convert cluster to factor for proper ordering + remove general col
+cluster_numeric <- as.numeric(gsub(".*?([0-9]+).*", "\\1", result_df_m$cluster))
+# general order
+order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,
+           1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,
+           41,43,44,40,8,7,31,37,15,23,10,25,38,42)
+result_df_m$cluster <- factor(result_df_m$cluster,
+                              levels = order)
+
+# Create the dotplot - size = count, color = % common (viridis turbo)
+ggplot(result_df_m, aes(x = cluster, y = regulation, size = count, color = pct_unique)) +
+  geom_point() +
+  scale_size_continuous(range = c(0, 10), 
+                        breaks = c(0, 50, 100, 150, 200),
+                        limits = c(0, 200)) +
+  scale_color_gradient(low = "aquamarine3", high = "navyblue",
+                       name = "% Unique genes") +
+  scale_x_discrete(labels = function(x) paste0("Ag", x)) +
+  labs(
+    x = "Cluster",
+    y = "Regulation", 
+    size = "Number of genes",
+    title = "Significant genes per cluster (% unique genes)",
+    color = "% Unique"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+```
+
+#### Feeding Status {.tabset }
+```{r DEG_Dot_Feeding, fig.width=12, fig.height=5}
+# bf ----
+unique_bf_up <- setdiff(up_genes_bf, DEGbulk_up_BF)
+unique_bf_down <- setdiff(down_genes_bf, DEGbulk_down_BF)
+
+# Extract data from bf list, including all clusters
+cluster_names <- names(clust_dea_bf)
+
+# Create a dataframe with counts and percentages
+result_df_bf <- data.frame()
+
+for (cluster in cluster_names) {
+  sig_genes <- bf_clust_sig[[cluster]]  # data.frame with rownames
+  
+  if (nrow(sig_genes) > 0) {
+    # Extract each cluster's sig genes
+    up_genes <- rownames(sig_genes)[sig_genes$avg_log2FC > 0]
+    down_genes <- rownames(sig_genes)[sig_genes$avg_log2FC < 0]
+    
+    up_count <- length(up_genes)
+    down_count <- length(down_genes)
+    
+    # % overlap with unique genes
+    up_pct <- ifelse(up_count > 0, mean(up_genes %in% unique_bf_up) * 100, 0)
+    down_pct <- ifelse(down_count > 0, mean(down_genes %in% unique_bf_down) * 100, 0)
+    
+  } else {
+    up_count <- down_count <- 0
+    up_pct <- down_pct <- 0
+  }
+  
+  # Add to result dataframe
+  temp_df <- data.frame(
+    cluster = gsub("Cluster_", "", cluster),
+    regulation = c("up", "down"),
+    count = c(up_count, down_count),
+    pct_unique = c(up_pct, down_pct)
+  )
+  
+  result_df_bf <- rbind(result_df_bf, temp_df)
+}
+
+# Convert cluster to factor for proper ordering + remove general col
+cluster_numeric <- as.numeric(gsub(".*?([0-9]+).*", "\\1", result_df_bf$cluster))
+result_df_bf$cluster <- factor(result_df_bf$cluster,
+                               levels = order)
+
+
+# Create the dotplot - size = count, color = % common (viridis turbo)
+ggplot(result_df_bf, aes(x = cluster, y = regulation, size = count, color = pct_unique)) +
+  geom_point() +
+  scale_size_continuous(range = c(0, 10), 
+                        breaks = c(0, 50, 100, 150, 200),
+                        limits = c(0, 200)) +
+  scale_color_gradient(low = "aquamarine3", high = "navyblue",
+                       name = "% Unique genes") +
+  scale_x_discrete(labels = function(x) paste0("Ag", x)) +
+  labs(
+    x = "Cluster",
+    y = "Regulation", 
+    size = "Number of genes",
+    title = "Significant genes per cluster (% unique genes)",
+    color = "% Unique"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Volcano Plots  {.tabset }
+#### Mating Status {.tabset }
+```{r volc_mating}
+# Prepare gene expression data in BFM and sc clusters
+# Differential expression status for colours
+DE_MVall_plot <- DE_MVall %>%
+  dplyr::mutate(
+    diffexpressed = dplyr::case_when(
+      log2FoldChange > 1.25 ~ "up-regulated",
+      log2FoldChange < -1.25 ~ "down-regulated",
+      TRUE ~ "log2FC < 1.25"))
+
+# plot
+ggplot(DE_MVall_plot,
+       aes(x = log2FoldChange,
+           y = -log10(padj),
+           color = diffexpressed)) +
+  geom_hline(yintercept = -log10(0.05), col = "darkgrey", linetype = "dashed") +
+  geom_point() +
+  scale_color_manual(
+    name   = "Differential expression",
+    values = c("down-regulated" = "#00AFBB",
+               "log2FC < 1.25" = "moccasin",
+               "up-regulated" = "red3")
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(size = 1.5)),
+    shape = guide_legend(override.aes = list(size = 1.5))
+  ) +
+  theme_classic() +
+  scale_x_continuous() +
+  scale_y_log10() +
+  ggtitle("Mating effect")
+
+```
+
+#### Feeding Status {.tabset }
+```{r, volc_feeding}
+# Prepare gene expression data in BFM and sc clusters
+# Differential expression status for colours
+DE_BFMall_plot <- DE_BFMall %>%
+  dplyr::mutate(
+    diffexpressed = dplyr::case_when(
+      log2FoldChange > 1.25 ~ "up-regulated",
+      log2FoldChange < -1.25 ~ "down-regulated",
+      TRUE ~ "log2FC < 1.25"))
+
+ggplot(DE_BFMall_plot,
+       aes(x = log2FoldChange,
+           y = -log10(padj),
+           color = diffexpressed)) +
+  geom_hline(yintercept = -log10(0.05), col = "darkgrey", linetype = "dashed") +
+  geom_point() +
+  scale_color_manual(
+    name   = "Differential expression",
+    values = c("down-regulated" = "#00AFBB",
+               "log2FC < 1.25" = "moccasin",
+               "up-regulated" = "red3")
+  ) +
+  guides(
+    color = guide_legend(override.aes = list(size = 1.5)),
+    shape = guide_legend(override.aes = list(size = 1.5))
+  ) +
+  theme_classic() +
+  scale_x_continuous() +
+  scale_y_log10() +
+  ggtitle("Blood meal effect")
+
+```
+
+
+### Heatmap  {.tabset }
+```{r Heat_DEG , fig.width=12, fig.height=8}
+# gene list
+bfm_degs_all <- read.csv(file.path(projDir,"/Data/Bulk/plotDEGs_bulk_bfm.csv"))
+gene_list_bf <- bfm_degs_all$gene_id  # your actual gene list in the order you want
+# in this case I put DEGs (upreg) in bf
+
+# cluster order
+cluster_order <- c(30,24,11:12,4,16:17,19:22,28:29,34,13,18,
+                   1:2,5,14,35,32,0,27,6,9,26,36,33,39,3,
+                   41,43,44,40,8,7,31,37,15,23,10,25,38,42)
+
+# Create empty dataframe for results
+heatmap_data <- data.frame()
+
+# Loop through each cluster
+for(cluster_name in names(clust_dea_bf)) {
+  # Extract cluster number (removes "Cluster_" prefix)
+  cluster_num <- as.numeric(gsub("Cluster_", "", cluster_name))
+  
+  # Only proceed if cluster is in our order
+  if(cluster_num %in% cluster_order) {
+    # Get the DE results for this cluster
+    de_results <- clust_dea_bf[[cluster_name]]$Allgenes
+    
+    # For each gene in your list, get the avg_log2FC
+    for(gene in gene_list_bf) {
+      if(gene %in% rownames(de_results)) {
+        fc_value <- de_results[gene, "avg_log2FC"]
+      } else {
+        fc_value <- NA
+      }
+      
+      # Add to dataframe
+      heatmap_data <- rbind(heatmap_data, data.frame(
+        Gene = gene,
+        Cluster = paste0("Ag", cluster_num),
+        avg_log2FC = fc_value,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+# Get present clusters
+present_clusters <- unique(as.numeric(gsub("Ag", "", heatmap_data$Cluster)))
+valid_clusters <- intersect(cluster_order, present_clusters)
+cluster_labels <- paste0("Ag", valid_clusters)
+
+# Set factor levels
+heatmap_data$Cluster <- factor(heatmap_data$Cluster, levels = cluster_labels)
+heatmap_data$Gene <- factor(heatmap_data$Gene, levels = rev(gene_list_bf))
+
+# Create the heatmap with viridis
+heatmap_plot_bf <- ggplot(heatmap_data, aes(x = Cluster, y = Gene, fill = avg_log2FC)) +
+  geom_tile() +
+  scale_fill_viridis(
+    option = "B",  # magma
+    name = "avg_log2FC",
+    na.value = "grey90"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+    axis.text.y = element_text(size = 6),
+    axis.title = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+  ) +
+  labs(title = "Gene Expression Heatmap (avg_log2FC)")
+
+# Display the plot
+print(heatmap_plot_bf)
+
+```
+
+
 
 # Session Info
 ```{r sesion_info}
