@@ -224,7 +224,7 @@ Plot_PCA_BF
 ```
 
 ## Heatmap {.tabset}
-```{r Plots_heat}
+```{r Plots_heat, fig.width=10, fig.height=10}
 # * plots ----
 # enrichment was curated based on VB GO, cytoscape ClueGO (including KEGG info) and manually (since some families are not well classified)
 # data from dds.bf rlog transformed
